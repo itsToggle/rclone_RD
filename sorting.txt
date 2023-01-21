@@ -1,0 +1,33 @@
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~ rclone_rd sorting file ~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+# - write comment lines using "#"
+#
+# - write regex definitions using: folder + " == " + regex definition. You can edit the exising ones or create new ones.
+#   Order matters for regex folders, first match will be final destination. Make sure there are no trailing space characters.
+#   torrents that dont match any regex definition end up in a folder named "default".
+#   Example: /movies == (?i)(19|20)([0-9]{2} ?\.?)
+#
+# - create new directories using "/foldername"
+#   Example: /shit
+#
+# - write move/renaming changes using: "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
+#   You do not need to create the directories you are moving stuff to, this will be done automatically.
+#   Example: /Our.Universe.S01.1080p.[rartv] -> /shows/Our Universe/Season 1
+#
+# - never leave an empty line between lines, always end with a newline as last character
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~ manual and regex folders: ~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+/shows == (?i)(S[0-9]{2}|SEASONS?.[0-9]|COMPLETE|[^457a-z\W\s]-[0-9]+)
+/movies == (?i)(19|20)([0-9]{2} ?\.?)
+/default
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~ recorded/manual changes to the structure: ~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
