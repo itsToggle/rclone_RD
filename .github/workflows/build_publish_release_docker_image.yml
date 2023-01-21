@@ -3,15 +3,20 @@ name: Docker release build
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      manual:
+        required: true
+        default: true
 
 jobs:
     build:
-        if: github.repository == 'rclone/rclone'
+        if: github.repository == 'rclone/rclone' || 1 == 1
         runs-on: ubuntu-latest
         name: Build image job
         steps:
             - name: Checkout master
-              uses: actions/checkout@v3
+              uses: actions/checkout@v2
               with:
                 fetch-depth: 0
             - name: Get actual patch version
@@ -27,33 +32,33 @@ jobs:
               uses: ilteoood/docker_buildx@1.1.0
               with:
                 tag: latest,${{ steps.actual_patch_version.outputs.ACTUAL_PATCH_VERSION }},${{ steps.actual_minor_version.outputs.ACTUAL_MINOR_VERSION }},${{ steps.actual_major_version.outputs.ACTUAL_MAJOR_VERSION }}
-                imageName: rclone/rclone
+                imageName: itstoggle/rclone_rd
                 platform: linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6
                 publish: true
                 dockerHubUser: ${{ secrets.DOCKER_HUB_USER }}
                 dockerHubPassword: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
     build_docker_volume_plugin:
-        if: github.repository == 'rclone/rclone'
+        if: github.repository == 'rclone/rclone'  || 1 == 1
         needs: build
         runs-on: ubuntu-latest
         name: Build docker plugin job
         steps:
             - name: Checkout master
-              uses: actions/checkout@v3
+              uses: actions/checkout@v2
               with:
                 fetch-depth: 0
             - name: Build and publish docker plugin
               shell: bash
               run: |
                 VER=${GITHUB_REF#refs/tags/}
-                PLUGIN_USER=rclone
+                PLUGIN_USER=itstoggle
                 docker login --username ${{ secrets.DOCKER_HUB_USER }} \
                              --password-stdin <<< "${{ secrets.DOCKER_HUB_PASSWORD }}"
                 for PLUGIN_ARCH in amd64 arm64 arm/v7 arm/v6 ;do
                     export PLUGIN_USER PLUGIN_ARCH
                     make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}
-                    make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}-${VER#v}
+                    make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}-master
                 done
                 make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG=latest
-                make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG=${VER#v}
+                make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG=master

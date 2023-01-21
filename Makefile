@@ -81,9 +81,6 @@ quicktest:
 racequicktest:
 	RCLONE_CONFIG="/notfound" go test $(BUILDTAGS) -cpu=2 -race ./...
 
-compiletest:
-	RCLONE_CONFIG="/notfound" go test $(BUILDTAGS) -run XXX ./...
-
 # Do source code quality checks
 check:	rclone
 	@echo "-- START CODE QUALITY REPORT -------------------------------"
@@ -265,12 +262,12 @@ winzip:
 	zip -9 rclone-$(TAG).zip rclone.exe
 
 # docker volume plugin
-PLUGIN_USER ?= rclone
+PLUGIN_USER ?= itstoggle
 PLUGIN_TAG ?= latest
 PLUGIN_BASE_TAG ?= latest
 PLUGIN_ARCH ?= amd64
-PLUGIN_IMAGE := $(PLUGIN_USER)/docker-volume-rclone:$(PLUGIN_TAG)
-PLUGIN_BASE := $(PLUGIN_USER)/rclone:$(PLUGIN_BASE_TAG)
+PLUGIN_IMAGE := $(PLUGIN_USER)/docker-volume-rclone_rd:$(PLUGIN_TAG)
+PLUGIN_BASE := $(PLUGIN_USER)/rclone_rd:$(PLUGIN_BASE_TAG)
 PLUGIN_BUILD_DIR := ./build/docker-plugin
 PLUGIN_CONTRIB_DIR := ./contrib/docker-plugin/managed
 
