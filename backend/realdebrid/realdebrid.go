@@ -87,11 +87,10 @@ var regex_folders = make(map[string]string)
 var id2name = make(map[string]string)
 var move_chars = " -> "
 var regx_chars = " == "
-var default_sorting = `#
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+var default_sorting = `# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~~~~~ rclone_rd sorting file ~~~~~~~~~~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
+
 # - write comment lines using "#"
 #
 # - write regex definitions using: folder + " == " + regex definition. You can edit the exising ones or create new ones.
@@ -105,21 +104,20 @@ var default_sorting = `#
 # - write move/renaming changes using: "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
 #   You do not need to create the directories you are moving stuff to, this will be done automatically.
 #   Example: /Our.Universe.S01.1080p.[rartv] -> /shows/Our Universe/Season 1
-#
-# - never leave an empty line between lines, always end with a newline as last character
-#
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~~~ manual and regex folders: ~~~~~~~~~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
+
 /shows == (?i)(S[0-9]{2}|SEASONS?.[0-9]|COMPLETE|[^457a-z\W\s]-[0-9]+)
 /movies == (?i)(19|20)([0-9]{2} ?\.?)
 /default
-#
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~ recorded/manual changes to the structure: ~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
+
+
 `
 
 // Register with Fs
@@ -414,8 +412,7 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 
 // CreateDir makes a directory with pathID as parent and name leaf
 func (f *Fs) CreateDir(ctx context.Context, dirID, leaf string) (newID string, err error) {
-	// Open the file
-	if len(dirID) > 0 {
+	if len(dirID) > 0 && dirID != "0" {
 		if first := dirID[0]; first != '/' {
 			dirID = "/" + dirID
 		}
@@ -611,6 +608,8 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				if strings.Contains(scanner.Text(), "#") {
+					continue
+				} else if len(scanner.Text()) == 0 || scanner.Text() == "\n" || scanner.Text() == "\n\r" {
 					continue
 				} else if strings.Contains(scanner.Text(), move_chars) {
 					// Split the line by " -> "
@@ -945,8 +944,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	} else if dirID != rootID {
 		//handle edge cases
 		if f.folder_exists(dirID + "/") {
+			fmt.Println("changed regested dirID: " + dirID + " to: " + dirID + "/ to find content.")
 			result = append(result, folders[dirID+"/"]...)
 		} else if f.folder_exists(dirID[:len(dirID)-1]) {
+			fmt.Println("changed regested dirID: " + dirID + " to: " + dirID[:len(dirID)-1] + " to find content.")
 			result = append(result, folders[dirID[:len(dirID)-1]]...)
 		} else {
 			var parentdirID = strings.Join(strings.Split(dirID, "/")[:len(strings.Split(dirID, "/"))-1], "/")
@@ -956,6 +957,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			if first := parentdirID[0]; first != '/' {
 				parentdirID = "/" + parentdirID
 			}
+			fmt.Println("changed regested dirID: " + dirID + " to: " + parentdirID + " to find content.")
 			result = append(result, folders[parentdirID]...)
 		}
 
@@ -1407,6 +1409,7 @@ func (o *Object) Storable() bool {
 
 // Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
+	fmt.Println("opening file: " + o.id + " with parent: " + o.ParentID + " using link: " + o.url)
 	if o.url == "" {
 		return nil, errors.New("can't download - no URL")
 	}
