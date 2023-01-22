@@ -73,9 +73,7 @@ var (
 	}
 )
 
-//Global lists of recieved content.
-//Realdebrid content is provided in pages with 100 items per page.
-//To limit api calls all pages are stored here and are only updated on changes in the total length
+//Global variables
 var cached []api.Item
 var torrents []api.Item
 var broken_torrents []string
@@ -89,6 +87,40 @@ var regex_folders = make(map[string]string)
 var id2name = make(map[string]string)
 var move_chars = " -> "
 var regx_chars = " == "
+var default_sorting = `#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~ rclone_rd sorting file ~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+# - write comment lines using "#"
+#
+# - write regex definitions using: folder + " == " + regex definition. You can edit the exising ones or create new ones.
+#   Order matters for regex folders, first match will be final destination. Make sure there are no trailing space characters.
+#   torrents that dont match any regex definition end up in a folder named "default".
+#   Example: /movies == (?i)(19|20)([0-9]{2} ?\.?)
+#
+# - create new directories using "/foldername"
+#   Example: /shit
+#
+# - write move/renaming changes using: "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
+#   You do not need to create the directories you are moving stuff to, this will be done automatically.
+#   Example: /Our.Universe.S01.1080p.[rartv] -> /shows/Our Universe/Season 1
+#
+# - never leave an empty line between lines, always end with a newline as last character
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~ manual and regex folders: ~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+/shows == (?i)(S[0-9]{2}|SEASONS?.[0-9]|COMPLETE|[^457a-z\W\s]-[0-9]+)
+/movies == (?i)(19|20)([0-9]{2} ?\.?)
+/default
+#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~ recorded/manual changes to the structure: ~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+`
 
 // Register with Fs
 func init() {
@@ -546,13 +578,26 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		// Open the sorting file
 
 		file, err := os.Open(f.opt.SortFile)
-		if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("creating default sorting file")
+			file, err = os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
+			if err != nil {
+				fmt.Println(err)
+			}
+			defer file.Close()
+
+			if _, err := file.WriteString(default_sorting); err != nil {
+				fmt.Println(err)
+			}
+		} else if err != nil {
 			fmt.Println(err)
+		} else {
+			defer file.Close()
 		}
-		defer file.Close()
 
 		fileInfo, _ := file.Stat()
 		fileModTime := fileInfo.ModTime().Unix()
+
 		if fileModTime > lastFileMod {
 
 			// Reset saved folder structure
@@ -781,16 +826,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			folder.Type = "folder"
 			folder.Generated = torrent.Generated
 			folder.Ended = torrent.Ended
-			// var skip = false
-			// for _, val := range folders[parentdir] {
-			// 	if val.Name == folder.Name {
-			// 		skip = true
-			// 		break
-			// 	}
-			// }
-			// if !skip {
 			folders[parentdir] = append(folders[parentdir], folder)
-			// }
 			id2name[torrent.ID] = torrent.Name
 			//iterate through files
 			var broken = false
@@ -835,16 +871,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					fileparentdir = strings.Join(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/")[:len(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/"))-1], "/") + "/"
 					ItemFile.Name = strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/")[len(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/"))-1]
 				}
-				// var skip = false
-				// for _, val := range folders[fileparentdir] {
-				// 	if val.Name == ItemFile.Name {
-				// 		skip = true
-				// 		break
-				// 	}
-				// }
-				// if !skip {
 				folders[fileparentdir] = append(folders[fileparentdir], ItemFile)
-				// }
 			}
 			if broken {
 				torrents[i] = f.redownloadTorrent(ctx, torrent)
@@ -878,16 +905,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						fileparentdir = strings.Join(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/")[:len(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/"))-1], "/") + "/"
 						ItemFile.Name = strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/")[len(strings.Split(structure["/"+torrent.Name+"/"+ItemFile.Name], "/"))-1]
 					}
-					// var skip = false
-					// for _, val := range folders[fileparentdir] {
-					// 	if val.Name == ItemFile.Name {
-					// 		skip = true
-					// 		break
-					// 	}
-					// }
-					// if !skip {
 					folders[fileparentdir] = append(folders[fileparentdir], ItemFile)
-					// }
 				}
 			}
 			if i > 0 {
@@ -999,32 +1017,14 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			// cache the directory ID for later lookups
 			f.dirCache.Put(remote, info.ID)
 			d := fs.NewDir(remote, time.Unix(info.CreatedAt, 0)).SetID(info.ID)
-			var skip = false
-			for _, entry := range entries {
-				if d.Remote() == entry.Remote() {
-					skip = true
-					break
-				}
-			}
-			if !skip {
-				entries = append(entries, d)
-			}
+			entries = append(entries, d)
 		} else if info.Type == api.ItemTypeFile {
 			o, err := f.newObjectWithInfo(ctx, remote, info)
 			if err != nil {
 				iErr = err
 				return true
 			}
-			var skip = false
-			for _, entry := range entries {
-				if o.Remote() == entry.Remote() {
-					skip = true
-					break
-				}
-			}
-			if !skip {
-				entries = append(entries, o)
-			}
+			entries = append(entries, o)
 		}
 		return false
 	})
