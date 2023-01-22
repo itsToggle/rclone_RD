@@ -28,8 +28,3 @@
 # ~~~ recorded/manual changes to the structure: ~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-/Family.Guy.S19.1080p.HULU.WEBRip.DDP5.1.x264-CtrlHD[rartv] -> /shows/another rename
-/shows/Neuer Ordner
-/shows/Neuer Ordner -> /shows/fuck
-/Neuer Ordner
-/Our.Universe.S01.1080p.NF.WEBRip.DDP5.1.Atmos.x264-SMURF[rartv] -> /shows/fuck/shit
