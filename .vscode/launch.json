@@ -2,13 +2,23 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch",
+            "name": "Move",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["tree","realdebrid:"],//["moveto","realdebrid:/shows/some shit/Family.Guy.S19E01.1080p.HULU.WEB-DL.DDP5.1.H.264-CtrlHD.mkv","realdebrid:/shows/some other shit/Family.Guy.S19E01.1080p.HULU.WEB-DL.DDP5.1.H.264-CtrlHD.mkv"],//["move","realdebrid:/shows/Family.Guy.S19.1080p.HULU.WEBRip.DDP5.1.x264-CtrlHD[rartv]","realdebrid:/shows/some shit"],//["moveto","realdebrid:/shows/Our.Universe/IVE RENAMED YOU BITCH/Our.Universe.S01E01.Chasing.Starlight.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264-SMURF.mkv","realdebrid:/new folder/someshit.mkv"], //["tree","realdebrid:"],//
+            "args": ["moveto","realdebrid:/shows/Our.Universe.S01.1080p.NF.WEBRip.DDP5.1.Atmos.x264-SMURF[rartv]","realdebrid:/shows/fuck/shit"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "List",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${fileDirname}",
+            "env": {},
+            "args": ["tree","realdebrid:"],
             "console": "integratedTerminal"
         }
     ]

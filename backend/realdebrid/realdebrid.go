@@ -1285,6 +1285,14 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if err != nil {
 		return err
 	}
+
+	// List the files to again to make them visible in the new location instantly
+	if last := dstDirectoryID[len(dstDirectoryID)-1]; last != '/' {
+		dstDirectoryID = dstDirectoryID + "/"
+	}
+
+	f.List(ctx, dstDirectoryID+dstLeaf)
+
 	srcFs.dirCache.FlushDir(srcRemote)
 	return nil
 }
