@@ -38,6 +38,7 @@ type Item struct {
 	Link            string       `json:"download,omitempty"`
 	OriginalLink    string       `json:"link,omitempty"`
 	Name            string       `json:"filename,omitempty"`
+	DefaultLocation string       ``
 	Size            int64        `json:"filesize,omitempty"`
 	Status          string       `json:"status,omitempty"`
 	StreamLink      string       ``

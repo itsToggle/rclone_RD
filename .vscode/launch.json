@@ -8,7 +8,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["moveto","realdebrid:/shows/Our.Universe.S01.1080p.NF.WEBRip.DDP5.1.Atmos.x264-SMURF[rartv]","realdebrid:/shows/fuck/shit"],
+            "args": ["moveto","realdebrid:/default/kafferep-cletus[PRiME].mkv","realdebrid:/default/Cast Away 2002/"],
             "console": "integratedTerminal"
         },
         {
@@ -19,6 +19,16 @@
             "program": "${fileDirname}",
             "env": {},
             "args": ["tree","realdebrid:"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Mkdir",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${fileDirname}",
+            "env": {},
+            "args": ["mkdir","realdebrid:/new"],
             "console": "integratedTerminal"
         }
     ]
