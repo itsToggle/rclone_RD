@@ -442,7 +442,7 @@ func (f *Fs) CreateDir(ctx context.Context, dirID, leaf string) (newID string, e
 
 // Redownload a dead torrent
 func (f *Fs) redownloadTorrent(ctx context.Context, torrent api.Item) (redownloaded_torrent api.Item) {
-	fmt.Println("Redownloading dead torrent: " + torrent.Name)
+	fs.LogPrint(fs.LogLevelNotice, "Redownloading dead torrent: "+torrent.Name)
 	//Get dead torrent file and hash info
 	var method = "GET"
 	var path = "/torrents/info/" + torrent.ID
@@ -473,10 +473,17 @@ func (f *Fs) redownloadTorrent(ctx context.Context, torrent api.Item) (redownloa
 				var resp *http.Response
 				var result api.Response
 				var retries = 0
+				var err_code = 0
 				resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-				for resp.StatusCode == 429 && retries <= 5 {
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
+				for err_code == 429 && retries <= 5 {
 					time.Sleep(time.Duration(2) * time.Second)
 					resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
+					if resp != nil {
+						err_code = resp.StatusCode
+					}
 					retries += 1
 				}
 				cached[i].OriginalLink = "this-is-not-a-link"
@@ -672,16 +679,22 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		var newcached []api.Item
 		var totalcount int
 		var printed = false
-
+		var err_code = 429
 		totalcount = 2
 		for len(newcached) < totalcount {
 			partialresult = nil
 			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
 			var retries = 0
-			for resp.StatusCode == 429 && retries <= 5 {
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
+			for err_code == 429 && retries <= 5 {
 				partialresult = nil
 				time.Sleep(time.Duration(2) * time.Second)
 				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
 				retries += 1
 			}
 			if err == nil {
@@ -719,14 +732,21 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		opts.Parameters.Set("limit", "1")
 		var newtorrents []api.Item
 		totalcount = 2
+		err_code = 429
 		for len(newtorrents) < totalcount {
 			partialresult = nil
 			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
 			var retries = 0
-			for resp.StatusCode == 429 && retries <= 5 {
+			for err_code == 429 && retries <= 5 {
 				partialresult = nil
 				time.Sleep(time.Duration(2) * time.Second)
 				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
 				retries += 1
 			}
 			if err == nil {
@@ -779,6 +799,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				//iterate through files
 				var broken = false
 				for _, link := range torrents[i].Links {
+					err_code = 0
 					if link == "" {
 						continue
 					}
@@ -805,14 +826,20 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							Parameters: f.baseParams(),
 						}
 						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-						if resp.StatusCode == 503 {
+						if resp != nil {
+							err_code = resp.StatusCode
+						}
+						if err_code == 503 || err_code == 404 {
 							broken = true
 							break
 						}
 						var retries = 0
-						for resp.StatusCode == 429 && retries <= 5 {
+						for err_code == 429 && retries <= 5 {
 							time.Sleep(time.Duration(2) * time.Second)
 							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+							if resp != nil {
+								err_code = resp.StatusCode
+							}
 							retries += 1
 						}
 					}
@@ -829,7 +856,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							mapping[mapping_id] = ItemFile.DefaultLocation
 						}
 					} else {
-						ItemFile.Name = strings.Split(mapping[mapping_id], "/")[len(strings.Split(mapping[mapping_id], "/"))-1]
+						if len(mapping[mapping_id]) > 0 {
+							split := strings.Split(mapping[mapping_id], "/")
+							if len(split) > 0 {
+								ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
+							}
+						}
 						if ItemFile.Name == "" {
 							continue
 						}
@@ -840,6 +872,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				if broken {
 					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
 					for _, link := range torrents[i].Links {
+						err_code = 0
 						var ItemFile api.Item
 						fs.LogPrint(fs.LogLevelDebug, "Creating new unrestricted direct link for torrent: "+torrents[i].Name)
 						path = "/unrestrict/link"
@@ -853,10 +886,16 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							Parameters: f.baseParams(),
 						}
 						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+						if resp != nil {
+							err_code = resp.StatusCode
+						}
 						var retries = 0
-						for resp.StatusCode == 429 && retries <= 5 {
+						for err_code == 429 && retries <= 5 {
 							time.Sleep(time.Duration(2) * time.Second)
 							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+							if resp != nil {
+								err_code = resp.StatusCode
+							}
 							retries += 1
 						}
 						if ItemFile.Name == "" {
@@ -875,7 +914,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 								mapping[mapping_id] = ItemFile.DefaultLocation
 							}
 						} else {
-							ItemFile.Name = strings.Split(mapping[mapping_id], "/")[len(strings.Split(mapping[mapping_id], "/"))-1]
+							if len(mapping[mapping_id]) > 0 {
+								split := strings.Split(mapping[mapping_id], "/")
+								if len(split) > 0 {
+									ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
+								}
+							}
 							if ItemFile.Name == "" {
 								continue
 							}
