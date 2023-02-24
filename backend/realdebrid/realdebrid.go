@@ -597,8 +597,8 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			}
 		}
 	}
-	// Open the sorting file
 
+	// Open the sorting file
 	file, err := os.Open(f.opt.SortFile)
 	if os.IsNotExist(err) {
 		fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
@@ -628,7 +628,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if (dirID == rootID) || !(f.folder_exists(dirID)) || updated {
 
 		// Create folder structure
-		//
 		if updated {
 
 			// Reset saved folder structure
@@ -781,39 +780,128 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 		// Iterate through built file and torrent list:
 		var broken = false
-		if updated {
-			for i := range torrents {
-				//handle dead torrents
-				broken = false
-				for _, TorrentID := range broken_torrents {
-					if torrents[i].ID == TorrentID {
-						broken = true
-					}
+		for i := range torrents {
+			//handle dead torrents
+			broken = false
+			for _, TorrentID := range broken_torrents {
+				if torrents[i].ID == TorrentID {
+					broken = true
 				}
-				if torrents[i].Status == "dead" || broken {
-					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
+			}
+			if torrents[i].Status == "dead" || broken {
+				torrents[i] = f.redownloadTorrent(ctx, torrents[i])
+			}
+			//set default torrents[i] location
+			torrents[i].DefaultLocation = "/default/"
+			for folder, r := range regex_defs {
+				match := r.MatchString(torrents[i].Name)
+				if match {
+					torrents[i].DefaultLocation = folder + "/"
+					break
 				}
-				//set default torrents[i] location
-				torrents[i].DefaultLocation = "/default/"
-				for folder, r := range regex_defs {
-					match := r.MatchString(torrents[i].Name)
-					if match {
-						torrents[i].DefaultLocation = folder + "/"
+			}
+			//iterate through files
+			var broken = false
+			for _, link := range torrents[i].Links {
+				err_code = 0
+				if link == "" {
+					continue
+				}
+				var ItemFile api.Item
+				for _, cachedfile := range cached {
+					if cachedfile.OriginalLink == link {
+						ItemFile = cachedfile
 						break
 					}
 				}
-				//iterate through files
-				for _, link := range torrents[i].Links {
-					err_code = 0
-					if link == "" {
+				if ItemFile.Link == "" {
+					fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
+					path = "/unrestrict/link"
+					method = "POST"
+					opts := rest.Opts{
+						Method: method,
+						Path:   path,
+						MultipartParams: url.Values{
+							"link": {link},
+						},
+						Parameters: f.baseParams(),
+					}
+					resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+					if resp != nil {
+						err_code = resp.StatusCode
+					}
+					if err_code == 503 || err_code == 404 {
+						broken = true
+						break
+					}
+					var retries = 0
+					for err_code == 429 && retries <= 5 {
+						time.Sleep(time.Duration(2) * time.Second)
+						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+						if resp != nil {
+							err_code = resp.StatusCode
+						}
+						retries += 1
+					}
+				}
+				if ItemFile.Name == "" {
+					continue
+				}
+				mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
+				ItemFile.MappingID = mapping_id
+				ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
+				ItemFile.ParentID = torrents[i].ID
+				ItemFile.TorrentHash = torrents[i].TorrentHash
+				ItemFile.Generated = torrents[i].Generated
+				ItemFile.Type = "file"
+				if _, ok := mapping[mapping_id]; !ok {
+					if _, ok := mapping["/"+torrents[i].Name+"/"]; ok {
+						mapping[mapping_id] = mapping["/"+torrents[i].Name+"/"]
+					} else {
+						mapping[mapping_id] = ItemFile.DefaultLocation
+					}
+				} else {
+					if len(mapping[mapping_id]) > 0 {
+						split := strings.Split(mapping[mapping_id], "/")
+						if len(split) > 0 {
+							ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
+						}
+					}
+					if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
 						continue
 					}
+					mapping[mapping_id] = strings.Join(strings.Split(mapping[mapping_id], "/")[:len(strings.Split(mapping[mapping_id], "/"))-1], "/") + "/"
+				}
+				folders[mapping[mapping_id]] = append(folders[mapping[mapping_id]], ItemFile)
+			}
+			if broken {
+				torrents[i] = f.redownloadTorrent(ctx, torrents[i])
+				for _, link := range torrents[i].Links {
+					err_code = 0
 					var ItemFile api.Item
-					for _, cachedfile := range cached {
-						if cachedfile.OriginalLink == link {
-							ItemFile = cachedfile
-							break
+					fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
+					path = "/unrestrict/link"
+					method = "POST"
+					opts := rest.Opts{
+						Method: method,
+						Path:   path,
+						MultipartParams: url.Values{
+							"link": {link},
+						},
+						Parameters: f.baseParams(),
+					}
+					resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+					if resp != nil {
+						err_code = resp.StatusCode
+					}
+					var retries = 0
+					for err_code == 429 && retries <= 5 {
+						time.Sleep(time.Duration(2) * time.Second)
+						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+						if resp != nil {
+							err_code = resp.StatusCode
 						}
+						retries += 1
 					}
 					if ItemFile.Name == "" {
 						continue
@@ -845,7 +933,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					}
 					folders[mapping[mapping_id]] = append(folders[mapping[mapping_id]], ItemFile)
 				}
-
 			}
 
 			// Iterate through the map
@@ -899,85 +986,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 		}
 
-	}
-
-	for i := range folders[dirID] {
-		broken := false
-		err_code := 0
-		if folders[dirID][i].Link == "" && folders[dirID][i].Type == "file" {
-			fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for file: "+folders[dirID][i].Name)
-			path = "/unrestrict/link"
-			method = "POST"
-			opts := rest.Opts{
-				Method: method,
-				Path:   path,
-				MultipartParams: url.Values{
-					"link": {folders[dirID][i].OriginalLink},
-				},
-				Parameters: f.baseParams(),
-			}
-			resp, _ = f.srv.CallJSON(ctx, &opts, nil, &folders[dirID][i])
-			if resp != nil {
-				err_code = resp.StatusCode
-			}
-			if err_code == 503 || err_code == 404 {
-				broken = true
-				break
-			}
-			var retries = 0
-			for err_code == 429 && retries <= 5 {
-				time.Sleep(time.Duration(2) * time.Second)
-				resp, _ = f.srv.CallJSON(ctx, &opts, nil, &folders[dirID][i])
-				if resp != nil {
-					err_code = resp.StatusCode
-				}
-				retries += 1
-			}
-		}
-		if broken {
-			for j := range torrents {
-				if torrents[j].ID == folders[dirID][i].ParentID {
-					var old_links []string
-					old_links = append(old_links, torrents[j].Links...)
-					torrents[j] = f.redownloadTorrent(ctx, torrents[j])
-					for k, link := range torrents[j].Links {
-						for l := range folders[dirID] {
-							if folders[dirID][l].OriginalLink == old_links[k] && old_links[k] != "" {
-								var ItemFile api.Item
-								err_code = 0
-								fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+folders[dirID][l].Name)
-								path = "/unrestrict/link"
-								method = "POST"
-								opts := rest.Opts{
-									Method: method,
-									Path:   path,
-									MultipartParams: url.Values{
-										"link": {link},
-									},
-									Parameters: f.baseParams(),
-								}
-								resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-								if resp != nil {
-									err_code = resp.StatusCode
-								}
-								var retries = 0
-								for err_code == 429 && retries <= 5 {
-									time.Sleep(time.Duration(2) * time.Second)
-									resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-									if resp != nil {
-										err_code = resp.StatusCode
-									}
-									retries += 1
-								}
-								folders[dirID][l].Link = ItemFile.Link
-								folders[dirID][l].OriginalLink = ItemFile.OriginalLink
-								folders[dirID][l].ParentID = ItemFile.ParentID
-							}
-						}
-					}
-				}
-			}
-		}
 	}
 
 	result = append(result, folders[dirID]...)
