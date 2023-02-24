@@ -8,7 +8,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["moveto","realdebrid:/default/kafferep-cletus[PRiME].mkv","realdebrid:/default/Cast Away 2002/"],
+            "args": ["moveto","realdebrid:/default/kafferep-cletus[PRiME].mkv/kafferep-cletus[PRiME].mkv","realdebrid:/default/Cast Away 2002/kafferep-cletus[PRiME].mkv"],
             "console": "integratedTerminal"
         },
         {
@@ -18,7 +18,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["tree","realdebrid:"],
+            "args": ["tree","realdebrid:/default/"],
             "console": "integratedTerminal"
         },
         {
@@ -30,6 +30,16 @@
             "env": {},
             "args": ["mkdir","realdebrid:/new"],
             "console": "integratedTerminal"
-        }
+        },
+        {
+            "name": "Remove",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${fileDirname}",
+            "env": {},
+            "args": ["delete","realdebrid:/default/Scrubs/Scrubs S01E01 My First Day (c)  [1080p x265 10bit Joy].mkv"],
+            "console": "integratedTerminal"
+        },
     ]
 }

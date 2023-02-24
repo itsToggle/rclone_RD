@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rclone/rclone/backend/realdebrid/api"
@@ -80,11 +81,13 @@ var broken_torrents []string
 var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
+var sequential = &sync.RWMutex{}
 var mapping = make(map[string]string)
 var sorting_file = make(map[string]string)
 var folders = make(map[string][]api.Item)
 var regex_folders = make(map[string]string)
 var regex_defs = make(map[string]*regexp.Regexp)
+var trash_indicator = ".trashed"
 var move_chars = " -> "
 var regx_chars = " == "
 var default_sorting = `# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -132,7 +135,7 @@ func init() {
 			Default: "",
 		}, {
 			Name:     "sort_file",
-			Help:     `please provide the full path to a file that should be used for sorting`,
+			Help:     `please provide the full path to a file (file does not need to exist) that should be used for sorting`,
 			Advanced: true,
 			Default:  "./sorting.txt",
 		}, {
@@ -179,6 +182,7 @@ type Object struct {
 	mimeType    string    // Mime type of object
 	url         string    // URL to download file
 	TorrentHash string    // Torrent Hash
+	MappingID   string    // Internal Mapping ID used for sorting
 }
 
 // ------------------------------------------------------------
@@ -573,6 +577,7 @@ type listAllFn func(*api.Item) bool
 //
 // It returns a newDirID which is what the system returned as the directory ID
 func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, filesOnly bool, fn listAllFn) (newDirID string, found bool, err error) {
+
 	path := "/downloads"
 	method := "GET"
 	var partialresult []api.Item
@@ -596,7 +601,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 	file, err := os.Open(f.opt.SortFile)
 	if os.IsNotExist(err) {
-		fs.LogPrint(fs.LogLevelNotice, "Creating sorting file.")
+		fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
 		file, err = os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
 			fmt.Println(err)
@@ -625,8 +630,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		// Create folder structure
 		//
 		if updated {
+
 			// Reset saved folder structure
-			fs.LogPrint(fs.LogLevelInfo, "Reading updated sorting file.")
+			fs.LogPrint(fs.LogLevelInfo, "reading updated sorting file.")
 			folders = make(map[string][]api.Item)
 			regex_folders = make(map[string]string)
 			regex_defs = make(map[string]*regexp.Regexp)
@@ -810,11 +816,8 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							break
 						}
 					}
-					if ItemFile.Name == "" {
-						continue
-					}
 					if ItemFile.Link == "" {
-						fs.LogPrint(fs.LogLevelDebug, "Creating new unrestricted direct link for torrent: "+torrents[i].Name)
+						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
 						path = "/unrestrict/link"
 						method = "POST"
 						opts := rest.Opts{
@@ -843,7 +846,11 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							retries += 1
 						}
 					}
+					if ItemFile.Name == "" {
+						continue
+					}
 					mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
+					ItemFile.MappingID = mapping_id
 					ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
 					ItemFile.ParentID = torrents[i].ID
 					ItemFile.TorrentHash = torrents[i].TorrentHash
@@ -862,7 +869,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 								ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
 							}
 						}
-						if ItemFile.Name == "" {
+						if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
 							continue
 						}
 						mapping[mapping_id] = strings.Join(strings.Split(mapping[mapping_id], "/")[:len(strings.Split(mapping[mapping_id], "/"))-1], "/") + "/"
@@ -874,7 +881,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					for _, link := range torrents[i].Links {
 						err_code = 0
 						var ItemFile api.Item
-						fs.LogPrint(fs.LogLevelDebug, "Creating new unrestricted direct link for torrent: "+torrents[i].Name)
+						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
 						path = "/unrestrict/link"
 						method = "POST"
 						opts := rest.Opts{
@@ -902,6 +909,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							continue
 						}
 						mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
+						ItemFile.MappingID = mapping_id
 						ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
 						ItemFile.ParentID = torrents[i].ID
 						ItemFile.TorrentHash = torrents[i].TorrentHash
@@ -920,7 +928,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 									ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
 								}
 							}
-							if ItemFile.Name == "" {
+							if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
 								continue
 							}
 							mapping[mapping_id] = strings.Join(strings.Split(mapping[mapping_id], "/")[:len(strings.Split(mapping[mapping_id], "/"))-1], "/") + "/"
@@ -932,6 +940,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 			// Iterate through the map
 			for _, newLocation := range mapping {
+
+				if strings.HasSuffix(newLocation, trash_indicator) {
+					continue
+				}
 
 				// Split the new location by "/"
 				locationParts := strings.Split(newLocation, "/")
@@ -1127,7 +1139,6 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 // purgeCheck removes the root directory, if check is set then it
 // refuses to do so if it has anything in
 func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
-	//fmt.Printf("Purging torrent: '%s'\n", rootID)
 	root := path.Join(f.root, dir)
 	if root == "" {
 		return errors.New("can't purge root directory")
@@ -1137,18 +1148,24 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 	if err != nil {
 		return err
 	}
-	path := "/torrents/delete/" + rootID
-	opts := rest.Opts{
-		Method:     "DELETE",
-		Path:       path,
-		Parameters: f.baseParams(),
+
+	// if rootID is a torrent ID
+	if len(rootID) == 13 && rootID == strings.ToUpper(rootID) {
+		fs.LogPrint(fs.LogLevelDebug, "removing realdebrid torrent id: "+rootID)
+		path := "/torrents/delete/" + rootID
+		opts := rest.Opts{
+			Method:     "DELETE",
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		var resp *http.Response
+		var result api.Response
+		err = f.pacer.Call(func() (bool, error) {
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
+			return shouldRetry(ctx, resp, err)
+		})
+		lastcheck = time.Now().Unix() - interval
 	}
-	var resp *http.Response
-	var result api.Response
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
-		return shouldRetry(ctx, resp, err)
-	})
 	f.dirCache.FlushDir(dir)
 	return nil
 }
@@ -1293,6 +1310,8 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	sequential.Lock()
+	defer sequential.Unlock()
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
@@ -1312,7 +1331,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	err = dstObj.readMetaData(ctx)
-	if err != nil {
+	if err != nil && !strings.HasSuffix(remote, trash_indicator) {
 		return nil, err
 	}
 	return dstObj, nil
@@ -1327,6 +1346,8 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
+	sequential.Lock()
+	defer sequential.Unlock()
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
@@ -1435,6 +1456,7 @@ func (o *Object) setMetaData(info *api.Item) (err error) {
 	o.url = info.Link
 	o.ParentID = info.ParentID
 	o.TorrentHash = info.TorrentHash
+	o.MappingID = info.MappingID
 	return nil
 }
 
@@ -1521,40 +1543,127 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	return nil
 }
 
-// Remove an object by ID
-func (f *Fs) remove(ctx context.Context, id ...string) (err error) {
-	//fmt.Printf("Removing direct link id: '%s'\n", id[0])
-	//if f.opt.RootFolderID == "torrents" {
-	//	fmt.Printf("Removing torrent id: '%s'\n", id[1])
-	//}
-	path := "/downloads/delete/" + id[0]
+// Remove an object by ID (always a file)
+func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
+	var resp *http.Response
+	var result api.Response
+	var retries = 0
+	var oldDirectoryID = ""
+	var torrent_files = 0
+	// Get parent torrent item
+	for i := range torrents {
+		if torrents[i].ID == o.ParentID {
+			oldDirectoryID = "/" + torrents[i].Name + "/"
+			for _, link := range torrents[i].Links {
+				if link != "" {
+					torrent_files += 1
+				}
+			}
+			break
+		}
+	}
+
+	// lock
+	sequential.Lock()
+	defer sequential.Unlock()
+
+	// Get all trashed files
+	var affected_items []string
+	for key, value := range sorting_file {
+		if strings.Contains(key, oldDirectoryID) {
+			if strings.HasSuffix(value, trash_indicator) {
+				affected_items = append(affected_items, key)
+			}
+		}
+	}
+	if len(affected_items) == 0 {
+		affected_items = append(affected_items, o.MappingID)
+	}
+
+	// if not all files are trashed
+	if len(affected_items) < torrent_files {
+		// move file to trash
+		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
+		sequential.Unlock()
+		f.Move(ctx, o, o.remote+trash_indicator)
+
+		// delete the link on realdebrid
+		fs.LogPrint(fs.LogLevelDebug, "removing realdebrid link id: "+o.id)
+		path := "/downloads/delete/" + o.id
+		opts := rest.Opts{
+			Method:     "DELETE",
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		err_code := 0
+		resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
+		if resp != nil {
+			err_code = resp.StatusCode
+		}
+		for err_code == 429 && retries <= 5 {
+			time.Sleep(time.Duration(2) * time.Second)
+			resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
+			retries += 1
+		}
+		return nil
+	}
+
+	// if all files are trashed
+	fs.LogPrint(fs.LogLevelDebug, "all files of torrent: "+o.ParentID+" are in internal trash")
+
+	// read sort file
+	file, err := os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	defer file.Close()
+
+	// delete mappings and torrent if all files are trashed
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	var new_lines = make(map[string]string)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Println(err)
+		return err
+	}
+	file.Truncate(0)
+	file.Seek(0, 0)
+
+	// move all affected items
+	for _, affected_item := range affected_items {
+		for _, line := range lines {
+			if strings.Contains(line, affected_item+move_chars) {
+				new_lines[line] = ""
+			}
+		}
+	}
+	for _, line := range lines {
+		write := line
+		if _, ok := new_lines[line]; ok {
+			continue
+		}
+		_, err := file.WriteString(write + "\n")
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+	}
+	fs.LogPrint(fs.LogLevelDebug, "removing realdebrid torrent id: "+o.ParentID)
+	path := "/torrents/delete/" + o.ParentID
 	opts := rest.Opts{
 		Method:     "DELETE",
 		Path:       path,
 		Parameters: f.baseParams(),
 	}
-	var resp *http.Response
-	var result api.Response
-	var retries = 0
 	err_code := 0
-	resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-	if resp != nil {
-		err_code = resp.StatusCode
-	}
-	for err_code == 429 && retries <= 5 {
-		time.Sleep(time.Duration(2) * time.Second)
-		resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-		if resp != nil {
-			err_code = resp.StatusCode
-		}
-		retries += 1
-	}
-	path = "/torrents/delete/" + id[1]
-	opts = rest.Opts{
-		Method:     "DELETE",
-		Path:       path,
-		Parameters: f.baseParams(),
-	}
 	resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
 	if resp != nil {
 		err_code = resp.StatusCode
@@ -1574,11 +1683,7 @@ func (o *Object) Remove(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("Remove: Failed to read metadata: %w", err)
 	}
-	if o.ParentID != "" {
-		return o.fs.remove(ctx, o.id, o.ParentID)
-	} else {
-		return o.fs.remove(ctx, o.id)
-	}
+	return o.fs.remove(ctx, o)
 }
 
 // MimeType of an Object if known, "" otherwise
