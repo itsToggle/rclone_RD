@@ -18,7 +18,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["tree","realdebrid:/default/"],
+            "args": ["tree","realdebrid:/movies/"],
             "console": "integratedTerminal"
         },
         {
