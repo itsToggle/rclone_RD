@@ -652,10 +652,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					// Add the key-value pair to the map
 					mapping.Store(parts[0], parts[1])
 				} else if strings.Contains(scanner.Text(), regx_chars) {
-					// Split the line by " -> "
+					// Split the line by " == "
 					parts := strings.Split(scanner.Text(), regx_chars)
 					// Add the key-value pair to the map
-					mapping.Store(parts[0], parts[1])
+					regex_folders.Store(parts[0], parts[1])
 				} else {
 					mapping.Store(scanner.Text(), scanner.Text())
 				}
