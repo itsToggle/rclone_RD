@@ -1037,6 +1037,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	}
 
 	value, _ := folders.Load(dirID)
+	if value == nil {
+		value = []api.Item{}
+	}
 	result = append(result, value.([]api.Item)...)
 
 	if err != nil {
