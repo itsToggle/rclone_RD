@@ -604,30 +604,19 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			}
 		}
 	}
-	// Open the sorting file
-
-	file, err := os.Open(f.opt.SortFile)
+	// Check the sorting file for updates
+	fileModTime := time.Now().Unix()
+	fileInfo, err := os.Stat(f.opt.SortFile)
 	if os.IsNotExist(err) {
-		fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
-		file, err = os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			fmt.Println(err)
-		}
-		defer file.Close()
-
-		if _, err := file.WriteString(default_sorting); err != nil {
-			fmt.Println(err)
-		}
+		// file does not exist
 	} else if err != nil {
-		fmt.Println(err)
+		// error occurred while checking file info
 	} else {
-		defer file.Close()
+		// file exists, get modification time
+		fileModTime = fileInfo.ModTime().Unix()
 	}
 
 	var updated = false
-	fileInfo, _ := file.Stat()
-	fileModTime := fileInfo.ModTime().Unix()
-
 	if fileModTime > lastFileMod {
 		updated = true
 	}
@@ -637,7 +626,23 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		// Create folder structure
 		//
 		if updated {
+			file, err := os.Open(f.opt.SortFile)
+			if os.IsNotExist(err) {
+				fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
+				file, err = os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
+				if err != nil {
+					fmt.Println(err)
+				}
+				defer file.Close()
 
+				if _, err := file.WriteString(default_sorting); err != nil {
+					fmt.Println(err)
+				}
+			} else if err != nil {
+				fmt.Println(err)
+			} else {
+				defer file.Close()
+			}
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
