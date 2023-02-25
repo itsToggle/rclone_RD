@@ -624,8 +624,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if (dirID == rootID) || !(f.folder_exists(dirID)) || updated {
 
 		// Create folder structure
-		//
 		if updated {
+
+			// read the file, create if missing
 			file, err := os.Open(f.opt.SortFile)
 			if os.IsNotExist(err) {
 				fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
@@ -644,6 +645,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			} else {
 				defer file.Close()
 			}
+
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
@@ -651,9 +653,14 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			eraseSyncMap(regex_defs)
 			eraseSyncMap(mapping)
 			eraseSyncMap(sorting_file)
+
 			// Flush the directory cache
 			f.dirCache.Flush()
+
 			// Read the file line by line
+			if _, err := file.Seek(0, io.SeekStart); err != nil {
+				fmt.Println(err)
+			}
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				if strings.Contains(scanner.Text(), "#") {
