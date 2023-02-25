@@ -81,7 +81,7 @@ var broken_torrents []string
 var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
-var sequential = &sync.RWMutex{}
+var sequential_maps = &sync.RWMutex{}
 var mapping = make(map[string]string)
 var sorting_file = make(map[string]string)
 var folders = make(map[string][]api.Item)
@@ -629,7 +629,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 		// Create folder structure
 		if updated {
-
+			sequential_maps.Lock()
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelInfo, "reading updated sorting file.")
 			folders = make(map[string][]api.Item)
@@ -670,7 +670,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			for key, value := range mapping {
 				sorting_file[key] = value
 			}
-
+			sequential_maps.Unlock()
 		}
 
 		//update global cached list
@@ -1307,26 +1307,28 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	sequential.Lock()
-	defer sequential.Unlock()
+	sequential_maps.Lock()
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
+		sequential_maps.Unlock()
 		return nil, fs.ErrorCantMove
 	}
 
 	// Create temporary object
 	dstObj, leaf, directoryID, err := f.createObject(ctx, remote, srcObj.modTime, srcObj.size)
 	if err != nil {
+		sequential_maps.Unlock()
 		return nil, err
 	}
 
 	// Do the move
 	err = f.move(ctx, true, srcObj.id, path.Base(srcObj.remote), leaf, srcObj.ParentID, directoryID)
 	if err != nil {
+		sequential_maps.Unlock()
 		return nil, err
 	}
-
+	sequential_maps.Unlock()
 	err = dstObj.readMetaData(ctx)
 	if err != nil && !strings.HasSuffix(remote, trash_indicator) {
 		return nil, err
@@ -1343,22 +1345,24 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	sequential.Lock()
-	defer sequential.Unlock()
+	sequential_maps.Lock()
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
+		sequential_maps.Unlock()
 		return fs.ErrorCantDirMove
 	}
 
 	srcID, srcDirectoryID, srcLeaf, dstDirectoryID, dstLeaf, err := f.dirCache.DirMove(ctx, srcFs.dirCache, srcFs.root, srcRemote, f.root, dstRemote)
 	if err != nil {
+		sequential_maps.Unlock()
 		return err
 	}
 
 	// Do the move
 	err = f.move(ctx, false, srcID, srcLeaf, dstLeaf, srcDirectoryID, dstDirectoryID)
 	if err != nil {
+		sequential_maps.Unlock()
 		return err
 	}
 
@@ -1369,7 +1373,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if first := dstDirectoryID[0]; first != '/' {
 		dstDirectoryID = "/" + dstDirectoryID
 	}
-
+	sequential_maps.Unlock()
 	f.List(ctx, dstDirectoryID+dstLeaf)
 
 	srcFs.dirCache.FlushDir(srcRemote)
@@ -1561,8 +1565,8 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 	}
 
 	// lock
-	sequential.Lock()
-	defer sequential.Unlock()
+	sequential_maps.Lock()
+	defer sequential_maps.Unlock()
 
 	// Get all trashed files
 	var affected_items []string
@@ -1581,7 +1585,7 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 	if len(affected_items) < torrent_files {
 		// move file to trash
 		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
-		sequential.Unlock()
+		sequential_maps.Unlock()
 		f.Move(ctx, o, o.remote+trash_indicator)
 
 		// delete the link on realdebrid
