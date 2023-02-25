@@ -81,12 +81,11 @@ var broken_torrents []string
 var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
-var sequential_maps = &sync.RWMutex{}
-var mapping = make(map[string]string)
-var sorting_file = make(map[string]string)
-var folders = make(map[string][]api.Item)
-var regex_folders = make(map[string]string)
-var regex_defs = make(map[string]*regexp.Regexp)
+var mapping sync.Map
+var sorting_file sync.Map
+var folders sync.Map
+var regex_folders sync.Map
+var regex_defs sync.Map
 var trash_indicator = ".trashed"
 var move_chars = " -> "
 var regx_chars = " == "
@@ -557,7 +556,7 @@ func (f *Fs) folder_exists(dirID string) bool {
 	if dirID == "/" {
 		return false
 	}
-	if _, ok := folders[dirID]; ok {
+	if _, ok := folders.Load(dirID); ok {
 		return true
 	}
 	return false
@@ -584,21 +583,21 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	var result []api.Item
 	var resp *http.Response
 
-	if _, ok := folders[dirID]; !ok {
-		if _, ok := folders[dirID+"/"]; ok {
+	if _, ok := folders.Load(dirID); !ok {
+		if _, ok := folders.Load(dirID + "/"); ok {
 			dirID = dirID + "/"
-		} else if _, ok := folders["/"+dirID+"/"]; ok {
+		} else if _, ok := folders.Load("/" + dirID + "/"); ok {
 			dirID = "/" + dirID + "/"
 		} else if len(dirID) > 1 {
 			if last := dirID[len(dirID)-1]; last == '/' {
-				if _, ok := folders[dirID[:len(dirID)-1]]; ok {
+				if _, ok := folders.Load(dirID[:len(dirID)-1]); ok {
 					dirID = dirID[:len(dirID)-1]
 				}
 			}
 		}
 	}
-
 	// Open the sorting file
+
 	file, err := os.Open(f.opt.SortFile)
 	if os.IsNotExist(err) {
 		fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
@@ -628,15 +627,16 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if (dirID == rootID) || !(f.folder_exists(dirID)) || updated {
 
 		// Create folder structure
+		//
 		if updated {
-			sequential_maps.Lock()
+
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelInfo, "reading updated sorting file.")
-			folders = make(map[string][]api.Item)
-			regex_folders = make(map[string]string)
-			regex_defs = make(map[string]*regexp.Regexp)
-			mapping = make(map[string]string)
-			sorting_file = make(map[string]string)
+			folders = sync.Map{}
+			regex_folders = sync.Map{}
+			regex_defs = sync.Map{}
+			mapping = sync.Map{}
+			sorting_file = sync.Map{}
 			// Flush the directory cache
 			f.dirCache.Flush()
 			// Read the file line by line
@@ -650,27 +650,29 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					// Split the line by " -> "
 					parts := strings.Split(scanner.Text(), move_chars)
 					// Add the key-value pair to the map
-					mapping[parts[0]] = parts[1]
+					mapping.Store(parts[0], parts[1])
 				} else if strings.Contains(scanner.Text(), regx_chars) {
 					// Split the line by " -> "
 					parts := strings.Split(scanner.Text(), regx_chars)
 					// Add the key-value pair to the map
-					regex_folders[parts[0]] = parts[1]
+					mapping.Store(parts[0], parts[1])
 				} else {
-					mapping[scanner.Text()] = scanner.Text()
+					mapping.Store(scanner.Text(), scanner.Text())
 				}
 			}
 
 			//create regex definitions
-			for folder, regex_def := range regex_folders {
-				r, _ := regexp.Compile(regex_def)
-				regex_defs[folder] = r
-			}
+			regex_folders.Range(func(folder, regex_def interface{}) bool {
+				r, _ := regexp.Compile(regex_def.(string))
+				regex_defs.Store(folder, r)
+				return true
+			})
 
-			for key, value := range mapping {
-				sorting_file[key] = value
-			}
-			sequential_maps.Unlock()
+			mapping.Range(func(key, value interface{}) bool {
+				sorting_file.Store(key, value)
+				return true
+			})
+
 		}
 
 		//update global cached list
@@ -780,128 +782,71 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 		// Iterate through built file and torrent list:
 		var broken = false
-		for i := range torrents {
-			//handle dead torrents
-			broken = false
-			for _, TorrentID := range broken_torrents {
-				if torrents[i].ID == TorrentID {
-					broken = true
-				}
-			}
-			if torrents[i].Status == "dead" || broken {
-				torrents[i] = f.redownloadTorrent(ctx, torrents[i])
-			}
-			//set default torrents[i] location
-			torrents[i].DefaultLocation = "/default/"
-			for folder, r := range regex_defs {
-				match := r.MatchString(torrents[i].Name)
-				if match {
-					torrents[i].DefaultLocation = folder + "/"
-					break
-				}
-			}
-			//iterate through files
-			var broken = false
-			for _, link := range torrents[i].Links {
-				err_code = 0
-				if link == "" {
-					continue
-				}
-				var ItemFile api.Item
-				for _, cachedfile := range cached {
-					if cachedfile.OriginalLink == link {
-						ItemFile = cachedfile
-						break
-					}
-				}
-				if ItemFile.Link == "" {
-					fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
-					path = "/unrestrict/link"
-					method = "POST"
-					opts := rest.Opts{
-						Method: method,
-						Path:   path,
-						MultipartParams: url.Values{
-							"link": {link},
-						},
-						Parameters: f.baseParams(),
-					}
-					resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-					if resp != nil {
-						err_code = resp.StatusCode
-					}
-					if err_code == 503 || err_code == 404 {
+		if updated {
+			for i := range torrents {
+				//handle dead torrents
+				broken = false
+				for _, TorrentID := range broken_torrents {
+					if torrents[i].ID == TorrentID {
 						broken = true
-						break
-					}
-					var retries = 0
-					for err_code == 429 && retries <= 5 {
-						time.Sleep(time.Duration(2) * time.Second)
-						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-						if resp != nil {
-							err_code = resp.StatusCode
-						}
-						retries += 1
 					}
 				}
-				if ItemFile.Name == "" {
-					continue
+				if torrents[i].Status == "dead" || broken {
+					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
 				}
-				mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
-				ItemFile.MappingID = mapping_id
-				ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
-				ItemFile.ParentID = torrents[i].ID
-				ItemFile.TorrentHash = torrents[i].TorrentHash
-				ItemFile.Generated = torrents[i].Generated
-				ItemFile.Type = "file"
-				if _, ok := mapping[mapping_id]; !ok {
-					if _, ok := mapping["/"+torrents[i].Name+"/"]; ok {
-						mapping[mapping_id] = mapping["/"+torrents[i].Name+"/"]
-					} else {
-						mapping[mapping_id] = ItemFile.DefaultLocation
+				//set default torrents[i] location
+				torrents[i].DefaultLocation = "/default/"
+				regex_defs.Range(func(folder, r interface{}) bool {
+					match := r.(*regexp.Regexp).MatchString(torrents[i].Name)
+					if match {
+						torrents[i].DefaultLocation = folder.(string) + "/"
+						return false
 					}
-				} else {
-					if len(mapping[mapping_id]) > 0 {
-						split := strings.Split(mapping[mapping_id], "/")
-						if len(split) > 0 {
-							ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
-						}
-					}
-					if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
-						continue
-					}
-					mapping[mapping_id] = strings.Join(strings.Split(mapping[mapping_id], "/")[:len(strings.Split(mapping[mapping_id], "/"))-1], "/") + "/"
-				}
-				folders[mapping[mapping_id]] = append(folders[mapping[mapping_id]], ItemFile)
-			}
-			if broken {
-				torrents[i] = f.redownloadTorrent(ctx, torrents[i])
+					return true
+				})
+				//iterate through files
+				var broken = false
 				for _, link := range torrents[i].Links {
 					err_code = 0
+					if link == "" {
+						continue
+					}
 					var ItemFile api.Item
-					fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
-					path = "/unrestrict/link"
-					method = "POST"
-					opts := rest.Opts{
-						Method: method,
-						Path:   path,
-						MultipartParams: url.Values{
-							"link": {link},
-						},
-						Parameters: f.baseParams(),
+					for _, cachedfile := range cached {
+						if cachedfile.OriginalLink == link {
+							ItemFile = cachedfile
+							break
+						}
 					}
-					resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-					if resp != nil {
-						err_code = resp.StatusCode
-					}
-					var retries = 0
-					for err_code == 429 && retries <= 5 {
-						time.Sleep(time.Duration(2) * time.Second)
+					if ItemFile.Link == "" {
+						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
+						path = "/unrestrict/link"
+						method = "POST"
+						opts := rest.Opts{
+							Method: method,
+							Path:   path,
+							MultipartParams: url.Values{
+								"link": {link},
+							},
+							Parameters: f.baseParams(),
+						}
 						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
 						if resp != nil {
 							err_code = resp.StatusCode
 						}
-						retries += 1
+						if err_code == 503 || err_code == 404 {
+							broken = true
+							break
+						}
+						var retries = 0
+						for err_code == 429 && retries <= 5 {
+							time.Sleep(time.Duration(2) * time.Second)
+							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+							if resp != nil {
+								err_code = resp.StatusCode
+							}
+							retries += 1
+						}
 					}
 					if ItemFile.Name == "" {
 						continue
@@ -913,37 +858,113 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					ItemFile.TorrentHash = torrents[i].TorrentHash
 					ItemFile.Generated = torrents[i].Generated
 					ItemFile.Type = "file"
-					if _, ok := mapping[mapping_id]; !ok {
-						if _, ok := mapping["/"+torrents[i].Name+"/"]; ok {
-							mapping[mapping_id] = mapping["/"+torrents[i].Name+"/"]
+					if _, ok := mapping.Load(mapping_id); !ok {
+						if _, ok := mapping.Load("/" + torrents[i].Name + "/"); ok {
+							value, _ := mapping.Load("/" + torrents[i].Name + "/")
+							mapping.Store(mapping_id, value)
 						} else {
-							mapping[mapping_id] = ItemFile.DefaultLocation
+							mapping.Store(mapping_id, ItemFile.DefaultLocation)
 						}
 					} else {
-						if len(mapping[mapping_id]) > 0 {
-							split := strings.Split(mapping[mapping_id], "/")
+						if value, _ := mapping.Load(mapping_id); len(value.(string)) > 0 {
+							value, _ := mapping.Load(mapping_id)
+							split := strings.Split(value.(string), "/")
 							if len(split) > 0 {
-								ItemFile.Name = split[len(strings.Split(mapping[mapping_id], "/"))-1]
+								ItemFile.Name = split[len(strings.Split(value.(string), "/"))-1]
 							}
 						}
 						if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
 							continue
 						}
-						mapping[mapping_id] = strings.Join(strings.Split(mapping[mapping_id], "/")[:len(strings.Split(mapping[mapping_id], "/"))-1], "/") + "/"
+						value, _ := mapping.Load(mapping_id)
+						mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
 					}
-					folders[mapping[mapping_id]] = append(folders[mapping[mapping_id]], ItemFile)
+					value, _ := mapping.Load(mapping_id)
+					list, ok := folders.Load(value)
+					if !ok {
+						list = []api.Item{}
+					}
+					folders.Store(value, append(list.([]api.Item), ItemFile))
+				}
+				if broken {
+					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
+					for _, link := range torrents[i].Links {
+						err_code = 0
+						var ItemFile api.Item
+						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
+						path = "/unrestrict/link"
+						method = "POST"
+						opts := rest.Opts{
+							Method: method,
+							Path:   path,
+							MultipartParams: url.Values{
+								"link": {link},
+							},
+							Parameters: f.baseParams(),
+						}
+						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+						if resp != nil {
+							err_code = resp.StatusCode
+						}
+						var retries = 0
+						for err_code == 429 && retries <= 5 {
+							time.Sleep(time.Duration(2) * time.Second)
+							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+							if resp != nil {
+								err_code = resp.StatusCode
+							}
+							retries += 1
+						}
+						if ItemFile.Name == "" {
+							continue
+						}
+						mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
+						ItemFile.MappingID = mapping_id
+						ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
+						ItemFile.ParentID = torrents[i].ID
+						ItemFile.TorrentHash = torrents[i].TorrentHash
+						ItemFile.Generated = torrents[i].Generated
+						ItemFile.Type = "file"
+						if _, ok := mapping.Load(mapping_id); !ok {
+							if _, ok := mapping.Load("/" + torrents[i].Name + "/"); ok {
+								value, _ := mapping.Load("/" + torrents[i].Name + "/")
+								mapping.Store(mapping_id, value)
+							} else {
+								mapping.Store(mapping_id, ItemFile.DefaultLocation)
+							}
+						} else {
+							if value, _ := mapping.Load(mapping_id); len(value.(string)) > 0 {
+								value, _ := mapping.Load(mapping_id)
+								split := strings.Split(value.(string), "/")
+								if len(split) > 0 {
+									ItemFile.Name = split[len(strings.Split(value.(string), "/"))-1]
+								}
+							}
+							if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
+								continue
+							}
+							value, _ := mapping.Load(mapping_id)
+							mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
+						}
+						value, _ := mapping.Load(mapping_id)
+						list, ok := folders.Load(value)
+						if !ok {
+							list = []api.Item{}
+						}
+						folders.Store(value, append(list.([]api.Item), ItemFile))
+					}
 				}
 			}
 
 			// Iterate through the map
-			for _, newLocation := range mapping {
+			mapping.Range(func(_, newLocation interface{}) bool {
 
-				if strings.HasSuffix(newLocation, trash_indicator) {
-					continue
+				if strings.HasSuffix(newLocation.(string), trash_indicator) {
+					return true
 				}
 
 				// Split the new location by "/"
-				locationParts := strings.Split(newLocation, "/")
+				locationParts := strings.Split(newLocation.(string), "/")
 
 				// Create a new variable to store the full path
 				var location string
@@ -953,7 +974,11 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					// Append the full path to the corresponding level
 					var skip bool
 					skip = false
-					for _, val := range folders[location] {
+					list, ok := folders.Load(location)
+					if !ok {
+						list = []api.Item{}
+					}
+					for _, val := range list.([]api.Item) {
 						if val.Name == locationPart {
 							skip = true
 							break
@@ -977,18 +1002,20 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					ItemFolder.ID = location + locationPart
 					ItemFolder.Type = "folder"
 					if locationPart != "" {
-						folders[location] = append(folders[location], ItemFolder)
+						folders.Store(location, append(list.([]api.Item), ItemFolder))
 					}
 					// Append the current location part to the full path
 					location = location + locationPart + "/"
 				}
-			}
+				return true
+			})
 
 		}
 
 	}
 
-	result = append(result, folders[dirID]...)
+	value, _ := folders.Load(dirID)
+	result = append(result, value.([]api.Item)...)
 
 	if err != nil {
 		return newDirID, found, fmt.Errorf("couldn't list files: %w", err)
@@ -1241,11 +1268,12 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 	}
 	// Get all files that should be moved.
 	var affected_items []string
-	for key, value := range sorting_file {
-		if strings.Contains(value, oldDirectoryID+oldLeaf) {
-			affected_items = append(affected_items, key)
+	sorting_file.Range(func(key, value interface{}) bool {
+		if strings.Contains(value.(string), oldDirectoryID+oldLeaf) {
+			affected_items = append(affected_items, key.(string))
 		}
-	}
+		return true
+	})
 	if len(affected_items) == 0 {
 		affected_items = append(affected_items, oldDirectoryID+oldLeaf)
 	}
@@ -1307,28 +1335,24 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	sequential_maps.Lock()
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
-		sequential_maps.Unlock()
 		return nil, fs.ErrorCantMove
 	}
 
 	// Create temporary object
 	dstObj, leaf, directoryID, err := f.createObject(ctx, remote, srcObj.modTime, srcObj.size)
 	if err != nil {
-		sequential_maps.Unlock()
 		return nil, err
 	}
 
 	// Do the move
 	err = f.move(ctx, true, srcObj.id, path.Base(srcObj.remote), leaf, srcObj.ParentID, directoryID)
 	if err != nil {
-		sequential_maps.Unlock()
 		return nil, err
 	}
-	sequential_maps.Unlock()
+
 	err = dstObj.readMetaData(ctx)
 	if err != nil && !strings.HasSuffix(remote, trash_indicator) {
 		return nil, err
@@ -1345,24 +1369,20 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	sequential_maps.Lock()
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
-		sequential_maps.Unlock()
 		return fs.ErrorCantDirMove
 	}
 
 	srcID, srcDirectoryID, srcLeaf, dstDirectoryID, dstLeaf, err := f.dirCache.DirMove(ctx, srcFs.dirCache, srcFs.root, srcRemote, f.root, dstRemote)
 	if err != nil {
-		sequential_maps.Unlock()
 		return err
 	}
 
 	// Do the move
 	err = f.move(ctx, false, srcID, srcLeaf, dstLeaf, srcDirectoryID, dstDirectoryID)
 	if err != nil {
-		sequential_maps.Unlock()
 		return err
 	}
 
@@ -1373,7 +1393,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if first := dstDirectoryID[0]; first != '/' {
 		dstDirectoryID = "/" + dstDirectoryID
 	}
-	sequential_maps.Unlock()
+
 	f.List(ctx, dstDirectoryID+dstLeaf)
 
 	srcFs.dirCache.FlushDir(srcRemote)
@@ -1564,19 +1584,16 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		}
 	}
 
-	// lock
-	sequential_maps.Lock()
-	defer sequential_maps.Unlock()
-
 	// Get all trashed files
 	var affected_items []string
-	for key, value := range sorting_file {
-		if strings.Contains(key, oldDirectoryID) {
-			if strings.HasSuffix(value, trash_indicator) {
-				affected_items = append(affected_items, key)
+	sorting_file.Range(func(key, value interface{}) bool {
+		if strings.Contains(key.(string), oldDirectoryID) {
+			if strings.HasSuffix(value.(string), trash_indicator) {
+				affected_items = append(affected_items, key.(string))
 			}
 		}
-	}
+		return true
+	})
 	if len(affected_items) == 0 {
 		affected_items = append(affected_items, o.MappingID)
 	}
@@ -1585,7 +1602,6 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 	if len(affected_items) < torrent_files {
 		// move file to trash
 		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
-		sequential_maps.Unlock()
 		f.Move(ctx, o, o.remote+trash_indicator)
 
 		// delete the link on realdebrid
