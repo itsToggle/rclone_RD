@@ -638,6 +638,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				if _, err := file.WriteString(default_sorting); err != nil {
 					fmt.Println(err)
 				}
+				file.Sync() // flush file contents to disk
 			} else if err != nil {
 				fmt.Println(err)
 			} else {

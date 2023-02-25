@@ -16,3 +16,5 @@ fuzz-build.zip
 Thumbs.db
 __pycache__
 sorting.txt
+rclone-as-beta-linux-arm64
+rclone-as-beta.exe
