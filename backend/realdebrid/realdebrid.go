@@ -562,6 +562,14 @@ func (f *Fs) folder_exists(dirID string) bool {
 	return false
 }
 
+// Clean sync.map without creating race conditions
+func eraseSyncMap(m sync.Map) {
+	m.Range(func(key interface{}, value interface{}) bool {
+		m.Delete(key)
+		return true
+	})
+}
+
 // list the objects into the function supplied
 //
 // If directories is set it only sends directories
@@ -631,12 +639,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		if updated {
 
 			// Reset saved folder structure
-			fs.LogPrint(fs.LogLevelInfo, "reading updated sorting file.")
-			folders = sync.Map{}
-			regex_folders = sync.Map{}
-			regex_defs = sync.Map{}
-			mapping = sync.Map{}
-			sorting_file = sync.Map{}
+			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
+			eraseSyncMap(folders)
+			eraseSyncMap(regex_folders)
+			eraseSyncMap(regex_defs)
+			eraseSyncMap(mapping)
+			eraseSyncMap(sorting_file)
 			// Flush the directory cache
 			f.dirCache.Flush()
 			// Read the file line by line
@@ -709,7 +717,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				if err == nil {
 					if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
 						if time.Now().Unix()-lastcheck > interval && !printed {
-							fs.LogPrint(fs.LogLevelInfo, "Updating all links and torrents.")
+							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
 							printed = true
 						}
 						newcached = append(newcached, partialresult...)

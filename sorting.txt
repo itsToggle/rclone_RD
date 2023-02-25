@@ -28,5 +28,3 @@
 # ~~~ recorded/manual changes to the structure: ~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-/default/Cast Away 2002/
-/kafferep-cletus[PRiME].mkv/kafferep-cletus[PRiME].mkv -> /default/Cast Away 2002/kafferep-cletus[PRiME].mkv
