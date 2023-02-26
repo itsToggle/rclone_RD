@@ -826,10 +826,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				//set default torrents[i] location
 				torrents[i].DefaultLocation = "/default/"
 				regex_defs.Range(func(folder string, r interface{}) bool {
-					match := r.(*regexp.Regexp).MatchString(torrents[i].Name)
-					if match {
-						torrents[i].DefaultLocation = folder + "/"
-						return false
+					if torrents[i].DefaultLocation == "/default/" {
+						match := r.(*regexp.Regexp).MatchString(torrents[i].Name)
+						if match {
+							torrents[i].DefaultLocation = folder + "/"
+							return false // break out of loop
+						}
 					}
 					return true
 				})
