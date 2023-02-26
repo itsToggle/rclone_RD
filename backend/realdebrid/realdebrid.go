@@ -653,6 +653,11 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
+			if !force_update {
+				eraseSyncMap(mapping)
+				eraseSyncMap(regex_defs)
+				eraseSyncMap(sorting_file)
+			}
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
