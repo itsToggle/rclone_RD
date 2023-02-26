@@ -145,6 +145,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/pkg/xattr v0.4.9
+	github.com/puzpuzpuz/xsync v1.5.2
 	golang.org/x/mobile v0.0.0-20221110043201-43a038452099
 	golang.org/x/term v0.4.0
 )

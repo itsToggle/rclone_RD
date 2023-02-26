@@ -4,7 +4,7 @@
 
 # - write comment lines using "#"
 #
-# - write regex definitions using: folder + " == " + regex definition. You can edit the exising ones or create new ones.
+# - write regex definitions using: "/foldername" + " == " + regex definition. You can edit the exising ones or create new ones.
 #   Order matters for regex folders, first match will be final destination. Make sure there are no trailing space characters.
 #   torrents that dont match any regex definition end up in a folder named "default".
 #   Example: /movies == (?i)(19|20)([0-9]{2} ?\.?)
@@ -12,9 +12,10 @@
 # - create new directories using "/foldername"
 #   Example: /shit
 #
-# - write move/renaming changes using: "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
+# - write move/renaming changes using: "/" + "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
 #   You do not need to create the directories you are moving stuff to, this will be done automatically.
-#   Example: /Our.Universe.S01.1080p.[rartv] -> /shows/Our Universe/Season 1
+#   Example: /some.show.S01/ -> /shows/some.show/season 1/
+#   Example: /some.show.S01/some.show.S01E01.mkv -> /shows/some.show/season 1/episode 1.mkv
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~ top level and regex folders: ~~~~~~~~~~

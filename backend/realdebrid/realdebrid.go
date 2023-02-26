@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/puzpuzpuz/xsync"
 	"github.com/rclone/rclone/backend/realdebrid/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -82,11 +83,11 @@ var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
 var mutex = &sync.Mutex{}
-var mapping sync.Map
-var sorting_file sync.Map
-var folders sync.Map
-var regex_folders sync.Map
-var regex_defs sync.Map
+var force_update = false
+var mapping = xsync.NewMap()
+var sorting_file = xsync.NewMap()
+var folders = xsync.NewMap()
+var regex_defs = xsync.NewMap()
 var trash_indicator = ".trashed"
 var move_chars = " -> "
 var regx_chars = " == "
@@ -96,7 +97,7 @@ var default_sorting = `# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # - write comment lines using "#"
 #
-# - write regex definitions using: folder + " == " + regex definition. You can edit the exising ones or create new ones.
+# - write regex definitions using: "/foldername" + " == " + regex definition. You can edit the exising ones or create new ones.
 #   Order matters for regex folders, first match will be final destination. Make sure there are no trailing space characters.
 #   torrents that dont match any regex definition end up in a folder named "default".
 #   Example: /movies == (?i)(19|20)([0-9]{2} ?\.?)
@@ -104,9 +105,10 @@ var default_sorting = `# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # - create new directories using "/foldername"
 #   Example: /shit
 #
-# - write move/renaming changes using: "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
+# - write move/renaming changes using: "/" + "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
 #   You do not need to create the directories you are moving stuff to, this will be done automatically.
-#   Example: /Our.Universe.S01.1080p.[rartv] -> /shows/Our Universe/Season 1
+#   Example: /some.show.S01/ -> /shows/some.show/season 1/
+#   Example: /some.show.S01/some.show.S01E01.mkv -> /shows/some.show/season 1/episode 1.mkv
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~ top level and regex folders: ~~~~~~~~~~
@@ -564,8 +566,8 @@ func (f *Fs) folder_exists(dirID string) bool {
 }
 
 // Clean sync.map without creating race conditions
-func eraseSyncMap(m sync.Map) {
-	m.Range(func(key interface{}, value interface{}) bool {
+func eraseSyncMap(m *xsync.Map) {
+	m.Range(func(key string, value interface{}) bool {
 		m.Delete(key)
 		return true
 	})
@@ -607,18 +609,19 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	}
 	// Check the sorting file for updates
 	fileModTime := time.Now().Unix()
-	fileInfo, err := os.Stat(f.opt.SortFile)
-	if os.IsNotExist(err) {
-		// file does not exist
-	} else if err != nil {
-		// error occurred while checking file info
-	} else {
-		// file exists, get modification time
-		fileModTime = fileInfo.ModTime().Unix()
+	if !force_update {
+		fileInfo, err := os.Stat(f.opt.SortFile)
+		if os.IsNotExist(err) {
+			// file does not exist
+		} else if err != nil {
+			// error occurred while checking file info
+		} else {
+			// file exists, get modification time
+			fileModTime = fileInfo.ModTime().Unix()
+		}
 	}
-
 	var updated = false
-	if fileModTime > lastFileMod {
+	if fileModTime > lastFileMod || force_update {
 		updated = true
 	}
 
@@ -650,13 +653,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
-			eraseSyncMap(regex_folders)
-			eraseSyncMap(regex_defs)
-			eraseSyncMap(mapping)
-			eraseSyncMap(sorting_file)
-
-			// Flush the directory cache
-			f.dirCache.Flush()
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -664,146 +660,152 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			}
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
-				if strings.Contains(scanner.Text(), "#") {
+				if strings.HasPrefix(scanner.Text(), "#") {
 					continue
 				} else if len(scanner.Text()) == 0 || scanner.Text() == "\n" || scanner.Text() == "\n\r" {
 					continue
 				} else if strings.Contains(scanner.Text(), move_chars) {
 					// Split the line by " -> "
 					parts := strings.Split(scanner.Text(), move_chars)
-					// Add the key-value pair to the map
-					mapping.Store(parts[0], parts[1])
+					// Add the key-value pair to the map if not present or changed
+					oldValue, ok := mapping.Load(parts[0])
+					if !ok || oldValue.(string) != parts[1] {
+						mapping.Store(parts[0], parts[1])
+					}
 				} else if strings.Contains(scanner.Text(), regx_chars) {
 					// Split the line by " == "
 					parts := strings.Split(scanner.Text(), regx_chars)
 					// Add the key-value pair to the map
-					regex_folders.Store(parts[0], parts[1])
+					oldValue, ok := regex_defs.Load(parts[0])
+					if !ok || oldValue.(*regexp.Regexp).String() != parts[1] {
+						r, _ := regexp.Compile(parts[1])
+						regex_defs.Store(parts[0], r)
+					}
 				} else {
-					mapping.Store(scanner.Text(), scanner.Text())
+					oldValue, ok := mapping.Load(scanner.Text())
+					if !ok || oldValue.(string) != scanner.Text() {
+						mapping.Store(scanner.Text(), scanner.Text())
+					}
 				}
 			}
 
-			//create regex definitions
-			regex_folders.Range(func(folder, regex_def interface{}) bool {
-				r, _ := regexp.Compile(regex_def.(string))
-				regex_defs.Store(folder, r)
-				return true
-			})
-
-			mapping.Range(func(key, value interface{}) bool {
+			mapping.Range(func(key string, value interface{}) bool {
 				sorting_file.Store(key, value)
 				return true
 			})
 
 		}
-
-		//update global cached list
-		opts := rest.Opts{
-			Method:     method,
-			Path:       path,
-			Parameters: f.baseParams(),
-		}
-		opts.Parameters.Set("includebreadcrumbs", "false")
-		opts.Parameters.Set("limit", "1")
-		var newcached []api.Item
-		var totalcount int
-		var printed = false
-		var err_code = 429
-		totalcount = 2
-		for len(newcached) < totalcount {
-			partialresult = nil
-			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-			var retries = 0
-			if resp != nil {
-				err_code = resp.StatusCode
+		if !force_update {
+			//update global cached list
+			opts := rest.Opts{
+				Method:     method,
+				Path:       path,
+				Parameters: f.baseParams(),
 			}
-			for err_code == 429 && retries <= 5 {
+			opts.Parameters.Set("includebreadcrumbs", "false")
+			opts.Parameters.Set("limit", "1")
+			var newcached []api.Item
+			var totalcount int
+			var printed = false
+			var err_code = 429
+			totalcount = 2
+			for len(newcached) < totalcount {
 				partialresult = nil
-				time.Sleep(time.Duration(2) * time.Second)
 				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				var retries = 0
 				if resp != nil {
 					err_code = resp.StatusCode
 				}
-				retries += 1
-			}
-			if err == nil {
-				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+				for err_code == 429 && retries <= 5 {
+					partialresult = nil
+					time.Sleep(time.Duration(2) * time.Second)
+					resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+					if resp != nil {
+						err_code = resp.StatusCode
+					}
+					retries += 1
+				}
 				if err == nil {
-					if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
-						if time.Now().Unix()-lastcheck > interval && !printed {
-							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
-							printed = true
+					totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+					if err == nil {
+						if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
+							if time.Now().Unix()-lastcheck > interval && !printed {
+								fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
+								printed = true
+							}
+							newcached = append(newcached, partialresult...)
+							opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
+							opts.Parameters.Set("limit", "2500")
+							updated = true
+						} else {
+							newcached = cached
 						}
-						newcached = append(newcached, partialresult...)
-						opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
-						opts.Parameters.Set("limit", "2500")
-						updated = true
 					} else {
-						newcached = cached
+						break
 					}
 				} else {
 					break
 				}
-			} else {
-				break
 			}
-		}
-		//fmt.Printf("Done.\n")
-		//fmt.Printf("Updating RealDebrid Torrents ... ")
-		cached = newcached
-		//get torrents
-		path = "/torrents"
-		opts = rest.Opts{
-			Method:     method,
-			Path:       path,
-			Parameters: f.baseParams(),
-		}
-		opts.Parameters.Set("limit", "1")
-		var newtorrents []api.Item
-		totalcount = 2
-		err_code = 429
-		for len(newtorrents) < totalcount {
-			partialresult = nil
-			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-			if resp != nil {
-				err_code = resp.StatusCode
+			//fmt.Printf("Done.\n")
+			//fmt.Printf("Updating RealDebrid Torrents ... ")
+			cached = newcached
+			//get torrents
+			path = "/torrents"
+			opts = rest.Opts{
+				Method:     method,
+				Path:       path,
+				Parameters: f.baseParams(),
 			}
-			var retries = 0
-			for err_code == 429 && retries <= 5 {
+			opts.Parameters.Set("limit", "1")
+			var newtorrents []api.Item
+			totalcount = 2
+			err_code = 429
+			for len(newtorrents) < totalcount {
 				partialresult = nil
-				time.Sleep(time.Duration(2) * time.Second)
 				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
 				if resp != nil {
 					err_code = resp.StatusCode
 				}
-				retries += 1
-			}
-			if err == nil {
-				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+				var retries = 0
+				for err_code == 429 && retries <= 5 {
+					partialresult = nil
+					time.Sleep(time.Duration(2) * time.Second)
+					resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+					if resp != nil {
+						err_code = resp.StatusCode
+					}
+					retries += 1
+				}
 				if err == nil {
-					if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
-						newtorrents = append(newtorrents, partialresult...)
-						opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
-						opts.Parameters.Set("limit", "2500")
-						updated = true
+					totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+					if err == nil {
+						if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
+							newtorrents = append(newtorrents, partialresult...)
+							opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
+							opts.Parameters.Set("limit", "2500")
+							updated = true
+						} else {
+							newtorrents = torrents
+						}
 					} else {
-						newtorrents = torrents
+						break
 					}
 				} else {
 					break
 				}
-			} else {
-				break
 			}
+			// Set everything as being up to date
+			lastcheck = time.Now().Unix()
+			lastFileMod = fileModTime
+			//fmt.Printf("Done.\n")
+			torrents = newtorrents
 		}
-		// Set everything as being up to date
-		lastcheck = time.Now().Unix()
-		lastFileMod = fileModTime
-		//fmt.Printf("Done.\n")
-		torrents = newtorrents
-
+		// set force update to false
+		force_update = false
 		// Iterate through built file and torrent list:
 		var broken = false
+		var err_code = 0
 		if updated {
 			for i := range torrents {
 				//handle dead torrents
@@ -818,10 +820,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				}
 				//set default torrents[i] location
 				torrents[i].DefaultLocation = "/default/"
-				regex_defs.Range(func(folder, r interface{}) bool {
+				regex_defs.Range(func(folder string, r interface{}) bool {
 					match := r.(*regexp.Regexp).MatchString(torrents[i].Name)
 					if match {
-						torrents[i].DefaultLocation = folder.(string) + "/"
+						torrents[i].DefaultLocation = folder + "/"
 						return false
 					}
 					return true
@@ -902,11 +904,11 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
 					}
 					value, _ := mapping.Load(mapping_id)
-					list, ok := folders.Load(value)
+					list, ok := folders.Load(value.(string))
 					if !ok {
 						list = []api.Item{}
 					}
-					folders.Store(value, append(list.([]api.Item), ItemFile))
+					folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 				}
 				if broken {
 					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
@@ -969,17 +971,17 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
 						}
 						value, _ := mapping.Load(mapping_id)
-						list, ok := folders.Load(value)
+						list, ok := folders.Load(value.(string))
 						if !ok {
 							list = []api.Item{}
 						}
-						folders.Store(value, append(list.([]api.Item), ItemFile))
+						folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 					}
 				}
 			}
 
 			// Iterate through the map
-			mapping.Range(func(_, newLocation interface{}) bool {
+			mapping.Range(func(_ string, newLocation interface{}) bool {
 
 				if strings.HasSuffix(newLocation.(string), trash_indicator) {
 					return true
@@ -1293,9 +1295,9 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 	}
 	// Get all files that should be moved.
 	var affected_items []string
-	sorting_file.Range(func(key, value interface{}) bool {
+	sorting_file.Range(func(key string, value interface{}) bool {
 		if strings.Contains(value.(string), oldDirectoryID+oldLeaf) {
-			affected_items = append(affected_items, key.(string))
+			affected_items = append(affected_items, key)
 		}
 		return true
 	})
@@ -1362,6 +1364,7 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	mutex.Lock()
 	defer mutex.Unlock()
+	force_update = true
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
@@ -1398,6 +1401,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
 	mutex.Lock()
 	defer mutex.Unlock()
+	force_update = true
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
@@ -1615,10 +1619,10 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 
 	// Get all trashed files
 	var affected_items []string
-	sorting_file.Range(func(key, value interface{}) bool {
-		if strings.Contains(key.(string), oldDirectoryID) {
+	sorting_file.Range(func(key string, value interface{}) bool {
+		if strings.Contains(key, oldDirectoryID) {
 			if strings.HasSuffix(value.(string), trash_indicator) {
-				affected_items = append(affected_items, key.(string))
+				affected_items = append(affected_items, key)
 			}
 		}
 		return true

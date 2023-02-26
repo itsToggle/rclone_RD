@@ -8,7 +8,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["moveto","realdebrid:/default/kafferep-cletus[PRiME].mkv/kafferep-cletus[PRiME].mkv","realdebrid:/default/Cast Away 2002/kafferep-cletus[PRiME].mkv"],
+            "args": ["moveto","realdebrid:/default/Scrubs/","realdebrid:/default/Test/","--disable","DirMove"],
             "console": "integratedTerminal"
         },
         {
