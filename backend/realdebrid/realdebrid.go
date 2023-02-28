@@ -653,11 +653,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
-			if !force_update {
-				eraseSyncMap(mapping)
-				eraseSyncMap(regex_defs)
-				eraseSyncMap(sorting_file)
-			}
+			eraseSyncMap(mapping)
+			eraseSyncMap(regex_defs)
+			eraseSyncMap(sorting_file)
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -911,11 +909,13 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
 					}
 					value, _ := mapping.Load(mapping_id)
-					list, ok := folders.Load(value.(string))
-					if !ok {
-						list = []api.Item{}
+					if value != nil {
+						list, ok := folders.Load(value.(string))
+						if !ok {
+							list = []api.Item{}
+						}
+						folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 					}
-					folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 				}
 				if broken {
 					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
@@ -978,11 +978,13 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
 						}
 						value, _ := mapping.Load(mapping_id)
-						list, ok := folders.Load(value.(string))
-						if !ok {
-							list = []api.Item{}
+						if value != nil {
+							list, ok := folders.Load(value.(string))
+							if !ok {
+								list = []api.Item{}
+							}
+							folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 						}
-						folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 					}
 				}
 			}
@@ -1254,7 +1256,10 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // move a file or folder
 //
 func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDirectoryID, newDirectoryID string) (err error) {
+	mutex.Lock()
+	defer mutex.Unlock()
 	// Handle IDs
+	oldDirectoryID_o := oldDirectoryID
 	for _, torrent := range torrents {
 		if torrent.ID == oldDirectoryID {
 			oldDirectoryID = "/" + torrent.Name + "/"
@@ -1291,6 +1296,12 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 	}
 	if first := oldDirectoryID[0]; first != '/' {
 		oldDirectoryID = "/" + oldDirectoryID
+	}
+	if last := oldDirectoryID_o[len(oldDirectoryID_o)-1]; last != '/' {
+		oldDirectoryID_o = oldDirectoryID_o + "/"
+	}
+	if first := oldDirectoryID_o[0]; first != '/' {
+		oldDirectoryID_o = "/" + oldDirectoryID_o
 	}
 	if !isFile {
 		if last := newLeaf[len(newLeaf)-1]; last != '/' {
@@ -1329,7 +1340,7 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 	for _, affected_item := range affected_items {
 		for _, line := range lines {
 			if strings.Contains(line, affected_item+move_chars) && !isFile {
-				new_dst := strings.Replace(strings.Split(line, move_chars)[len(strings.Split(line, move_chars))-1], oldDirectoryID+oldLeaf, newDirectoryID+newLeaf, -1)
+				new_dst := strings.Replace(strings.Split(line, move_chars)[len(strings.Split(line, move_chars))-1], oldDirectoryID_o+oldLeaf, newDirectoryID+newLeaf, -1)
 				new_lines[line] = affected_item + move_chars + new_dst
 				replaced = true
 			} else if strings.Contains(line, affected_item+move_chars) && isFile {
@@ -1369,8 +1380,6 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	mutex.Lock()
-	defer mutex.Unlock()
 	force_update = true
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -1406,8 +1415,6 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	mutex.Lock()
-	defer mutex.Unlock()
 	force_update = true
 	srcFs, ok := src.(*Fs)
 	if !ok {
@@ -1608,9 +1615,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 	var resp *http.Response
 	var result api.Response
-	var retries = 0
 	var oldDirectoryID = ""
 	var torrent_files = 0
+
 	// Get parent torrent item
 	for i := range torrents {
 		if torrents[i].ID == o.ParentID {
@@ -1644,33 +1651,34 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
 		f.Move(ctx, o, o.remote+trash_indicator)
 
-		// delete the link on realdebrid
-		fs.LogPrint(fs.LogLevelDebug, "removing realdebrid link id: "+o.id)
-		path := "/downloads/delete/" + o.id
-		opts := rest.Opts{
-			Method:     "DELETE",
-			Path:       path,
-			Parameters: f.baseParams(),
-		}
-		err_code := 0
-		resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-		if resp != nil {
-			err_code = resp.StatusCode
-		}
-		for err_code == 429 && retries <= 5 {
-			time.Sleep(time.Duration(2) * time.Second)
-			resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-			if resp != nil {
-				err_code = resp.StatusCode
-			}
-			retries += 1
-		}
+		// // delete the link on realdebrid
+		// fs.LogPrint(fs.LogLevelDebug, "removing realdebrid link id: "+o.id)
+		// path := "/downloads/delete/" + o.id
+		// opts := rest.Opts{
+		// 	Method:     "DELETE",
+		// 	Path:       path,
+		// 	Parameters: f.baseParams(),
+		// }
+		// err_code := 0
+		// resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
+		// if resp != nil {
+		// 	err_code = resp.StatusCode
+		// }
+		// for err_code == 429 && retries <= 5 {
+		// 	time.Sleep(time.Duration(2) * time.Second)
+		// 	resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
+		// 	if resp != nil {
+		// 		err_code = resp.StatusCode
+		// 	}
+		// 	retries += 1
+		// }
 		return nil
 	}
 
 	// if all files are trashed
 	fs.LogPrint(fs.LogLevelDebug, "all files of torrent: "+o.ParentID+" are in internal trash")
-
+	mutex.Lock()
+	defer mutex.Unlock()
 	// read sort file
 	file, err := os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
