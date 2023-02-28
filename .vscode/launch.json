@@ -8,7 +8,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["moveto","realdebrid:/default/PISS","realdebrid:/default/MULTI",],//"--disable","DirMove"],
+            "args": ["moveto","realdebrid:/default/MULTI","realdebrid:/default/Scrubs","--disable","DirMove"],
             "console": "integratedTerminal"
         },
         {
@@ -18,7 +18,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["tree","realdebrid:/movies/"],
+            "args": ["tree","realdebrid:/default/"],
             "console": "integratedTerminal"
         },
         {
@@ -38,7 +38,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["delete","realdebrid:/default/Scrubs/Scrubs S01E01 My First Day (c)  [1080p x265 10bit Joy].mkv"],
+            "args": ["delete","realdebrid:/default/some.show/season 1"],
             "console": "integratedTerminal"
         },
     ]

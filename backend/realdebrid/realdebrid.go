@@ -87,7 +87,8 @@ var broken_torrents []string
 var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
-var mutex = &sync.Mutex{}
+var file_mutex = &sync.Mutex{}
+var move_mutex = &sync.Mutex{}
 var force_update = false
 var mapping = xsync.NewMap()
 var sorting_file = xsync.NewMap()
@@ -423,6 +424,8 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 
 // CreateDir makes a directory with pathID as parent and name leaf
 func (f *Fs) CreateDir(ctx context.Context, dirID, leaf string) (newID string, err error) {
+	file_mutex.Lock()
+	defer file_mutex.Unlock()
 	if len(dirID) > 0 && dirID != "/" {
 		if first := dirID[0]; first != '/' {
 			dirID = "/" + dirID
@@ -632,9 +635,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 	if (dirID == rootID) || !(f.folder_exists(dirID)) || updated {
 
+		var force_updated_items []string
 		// Create folder structure
 		if updated {
-
+			file_mutex.Lock()
 			// read the file, create if missing
 			file, err := os.Open(f.opt.SortFile)
 			if os.IsNotExist(err) {
@@ -657,10 +661,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
-			eraseSyncMap(folders)
-			eraseSyncMap(mapping)
-			eraseSyncMap(sorting_file)
 			regex_defs = []RegexValuePair{}
+			if !force_update {
+				eraseSyncMap(folders)
+				eraseSyncMap(mapping)
+				eraseSyncMap(sorting_file)
+			}
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -679,6 +685,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					oldValue, ok := mapping.Load(parts[0])
 					if !ok || oldValue.(string) != parts[1] {
 						mapping.Store(parts[0], parts[1])
+						if force_update {
+							force_updated_items = append(force_updated_items, parts[0])
+							sorting_file.Store(parts[0], parts[1])
+						}
 					}
 				} else if strings.Contains(scanner.Text(), regx_chars) {
 					// Split the line by " == "
@@ -691,14 +701,25 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					oldValue, ok := mapping.Load(scanner.Text())
 					if !ok || oldValue.(string) != scanner.Text() {
 						mapping.Store(scanner.Text(), scanner.Text())
+						if force_update {
+							sorting_file.Store(scanner.Text(), scanner.Text())
+							force_updated_items = append(force_updated_items, scanner.Text())
+						}
 					}
 				}
 			}
 
-			mapping.Range(func(key string, value interface{}) bool {
-				sorting_file.Store(key, value)
-				return true
-			})
+			file_mutex.Unlock()
+
+			if !force_update {
+				mapping.Range(func(key string, value interface{}) bool {
+					oldValue, ok := sorting_file.Load(key)
+					if !ok || oldValue != value {
+						sorting_file.Store(key, value)
+					}
+					return true
+				})
+			}
 
 		}
 		if !force_update {
@@ -807,13 +828,24 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			//fmt.Printf("Done.\n")
 			torrents = newtorrents
 		}
-		// set force update to false
-		force_update = false
+
 		// Iterate through built file and torrent list:
 		var broken = false
 		var err_code = 0
 		if updated {
 			for i := range torrents {
+				//if force update, skip unaffected torrents
+				if force_update {
+					var skip = true
+					for _, force_updated_item := range force_updated_items {
+						if strings.Contains(force_updated_item, torrents[i].Name) {
+							skip = false
+						}
+					}
+					if skip {
+						continue
+					}
+				}
 				//handle dead torrents
 				broken = false
 				for _, TorrentID := range broken_torrents {
@@ -914,6 +946,16 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						if !ok {
 							list = []api.Item{}
 						}
+						skip := false
+						for _, existing_item := range list.([]api.Item) {
+							if existing_item.Name == ItemFile.Name {
+								skip = true
+								break
+							}
+						}
+						if skip {
+							continue
+						}
 						folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 					}
 				}
@@ -983,6 +1025,16 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							if !ok {
 								list = []api.Item{}
 							}
+							skip := false
+							for _, existing_item := range list.([]api.Item) {
+								if existing_item.Name == ItemFile.Name {
+									skip = true
+									break
+								}
+							}
+							if skip {
+								continue
+							}
 							folders.Store(value.(string), append(list.([]api.Item), ItemFile))
 						}
 					}
@@ -990,7 +1042,19 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			}
 
 			// Iterate through the map
-			mapping.Range(func(_ string, newLocation interface{}) bool {
+			mapping.Range(func(key string, newLocation interface{}) bool {
+
+				if force_update {
+					skip := true
+					for _, force_updated_item := range force_updated_items {
+						if strings.Contains(key, force_updated_item) {
+							skip = false
+						}
+					}
+					if skip {
+						return true
+					}
+				}
 
 				if strings.HasSuffix(newLocation.(string), trash_indicator) {
 					return true
@@ -1003,7 +1067,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				var location string
 
 				// Iterate through each level of the new location
-				for _, locationPart := range locationParts {
+				for _, locationPart := range locationParts[:len(locationParts)-1] {
 					// Append the full path to the corresponding level
 					var skip bool
 					skip = false
@@ -1044,6 +1108,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			})
 
 		}
+
+		// set force update to false
+		force_update = false
 
 	}
 
@@ -1256,8 +1323,8 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // move a file or folder
 //
 func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDirectoryID, newDirectoryID string) (err error) {
-	mutex.Lock()
-	defer mutex.Unlock()
+	file_mutex.Lock()
+	defer file_mutex.Unlock()
 	// Handle IDs
 	oldDirectoryID_o := oldDirectoryID
 	for _, torrent := range torrents {
@@ -1380,6 +1447,8 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	move_mutex.Lock()
+	defer move_mutex.Unlock()
 	force_update = true
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -1415,6 +1484,8 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
+	move_mutex.Lock()
+	defer move_mutex.Unlock()
 	force_update = true
 	srcFs, ok := src.(*Fs)
 	if !ok {
@@ -1677,8 +1748,8 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 
 	// if all files are trashed
 	fs.LogPrint(fs.LogLevelDebug, "all files of torrent: "+o.ParentID+" are in internal trash")
-	mutex.Lock()
-	defer mutex.Unlock()
+	file_mutex.Lock()
+	defer file_mutex.Unlock()
 	// read sort file
 	file, err := os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
