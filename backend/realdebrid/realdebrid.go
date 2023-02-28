@@ -75,6 +75,11 @@ var (
 	}
 )
 
+type RegexValuePair struct {
+	Regex *regexp.Regexp
+	Value string
+}
+
 //Global variables
 var cached []api.Item
 var torrents []api.Item
@@ -87,7 +92,7 @@ var force_update = false
 var mapping = xsync.NewMap()
 var sorting_file = xsync.NewMap()
 var folders = xsync.NewMap()
-var regex_defs = xsync.NewMap()
+var regex_defs = []RegexValuePair{}
 var trash_indicator = ".trashed"
 var move_chars = " -> "
 var regx_chars = " == "
@@ -654,8 +659,8 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			eraseSyncMap(folders)
 			eraseSyncMap(mapping)
-			eraseSyncMap(regex_defs)
 			eraseSyncMap(sorting_file)
+			regex_defs = []RegexValuePair{}
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -679,11 +684,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					// Split the line by " == "
 					parts := strings.Split(scanner.Text(), regx_chars)
 					// Add the key-value pair to the map
-					oldValue, ok := regex_defs.Load(parts[0])
-					if !ok || oldValue.(*regexp.Regexp).String() != parts[1] {
-						r, _ := regexp.Compile(parts[1])
-						regex_defs.Store(parts[0], r)
-					}
+					r, _ := regexp.Compile(parts[1])
+					regex_defs = append(regex_defs, RegexValuePair{r, parts[0]})
+
 				} else {
 					oldValue, ok := mapping.Load(scanner.Text())
 					if !ok || oldValue.(string) != scanner.Text() {
@@ -823,16 +826,13 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				}
 				//set default torrents[i] location
 				torrents[i].DefaultLocation = "/default/"
-				regex_defs.Range(func(folder string, r interface{}) bool {
-					if torrents[i].DefaultLocation == "/default/" {
-						match := r.(*regexp.Regexp).MatchString(torrents[i].Name)
-						if match {
-							torrents[i].DefaultLocation = folder + "/"
-							return false // break out of loop
-						}
+				for _, pair := range regex_defs {
+					match := pair.Regex.MatchString(torrents[i].Name)
+					if match {
+						torrents[i].DefaultLocation = pair.Value + "/"
+						break
 					}
-					return true
-				})
+				}
 				//iterate through files
 				var broken = false
 				for _, link := range torrents[i].Links {
