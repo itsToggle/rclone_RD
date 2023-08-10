@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,9 +88,7 @@ var broken_torrents []string
 var lastcheck int64 = time.Now().Unix()
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
-var file_mutex = &sync.Mutex{}
-var move_mutex = &sync.Mutex{}
-var force_update = false
+var file_mutex = &sync.RWMutex{}
 var mapping = xsync.NewMap()
 var sorting_file = xsync.NewMap()
 var folders = xsync.NewMap()
@@ -424,8 +423,10 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 
 // CreateDir makes a directory with pathID as parent and name leaf
 func (f *Fs) CreateDir(ctx context.Context, dirID, leaf string) (newID string, err error) {
+	// fs.LogPrint(fs.LogLevelDebug, "CreateDir locking file_mutex")
 	file_mutex.Lock()
 	defer file_mutex.Unlock()
+	// defer fs.LogPrint(fs.LogLevelDebug, "CreateDir unlocking file_mutex")
 	if len(dirID) > 0 && dirID != "/" {
 		if first := dirID[0]; first != '/' {
 			dirID = "/" + dirID
@@ -617,7 +618,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	}
 	// Check the sorting file for updates
 	fileModTime := time.Now().Unix()
-	if !force_update {
+	if math.Abs(float64(fileModTime-lastFileMod)) >= 5 {
 		fileInfo, err := os.Stat(f.opt.SortFile)
 		if os.IsNotExist(err) {
 			// file does not exist
@@ -629,16 +630,17 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		}
 	}
 	var updated = false
-	if fileModTime > lastFileMod || force_update {
+	if fileModTime > lastFileMod {
 		updated = true
 	}
 
-	if (dirID == rootID) || !(f.folder_exists(dirID)) || updated {
-
-		var force_updated_items []string
+	if ((dirID == rootID) || !(f.folder_exists(dirID)) || updated) && math.Abs(float64(fileModTime-lastFileMod)) >= 5 {
 		// Create folder structure
 		if updated {
-			file_mutex.Lock()
+			// fs.LogPrint(fs.LogLevelDebug, "ListAll Rlocking file_mutex")
+			file_mutex.RLock()
+			defer file_mutex.RUnlock()
+			// defer fs.LogPrint(fs.LogLevelDebug, "ListAll Runlocking file_mutex")
 			// read the file, create if missing
 			file, err := os.Open(f.opt.SortFile)
 			if os.IsNotExist(err) {
@@ -662,11 +664,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// Reset saved folder structure
 			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
 			regex_defs = []RegexValuePair{}
-			if !force_update {
-				eraseSyncMap(folders)
-				eraseSyncMap(mapping)
-				eraseSyncMap(sorting_file)
-			}
+			eraseSyncMap(folders)
+			eraseSyncMap(mapping)
+			eraseSyncMap(sorting_file)
 
 			// Read the file line by line
 			if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -685,10 +685,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					oldValue, ok := mapping.Load(parts[0])
 					if !ok || oldValue.(string) != parts[1] {
 						mapping.Store(parts[0], parts[1])
-						if force_update {
-							force_updated_items = append(force_updated_items, parts[0])
-							sorting_file.Store(parts[0], parts[1])
-						}
 					}
 				} else if strings.Contains(scanner.Text(), regx_chars) {
 					// Split the line by " == "
@@ -701,151 +697,132 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					oldValue, ok := mapping.Load(scanner.Text())
 					if !ok || oldValue.(string) != scanner.Text() {
 						mapping.Store(scanner.Text(), scanner.Text())
-						if force_update {
-							sorting_file.Store(scanner.Text(), scanner.Text())
-							force_updated_items = append(force_updated_items, scanner.Text())
-						}
 					}
 				}
 			}
 
-			file_mutex.Unlock()
-
-			if !force_update {
-				mapping.Range(func(key string, value interface{}) bool {
-					oldValue, ok := sorting_file.Load(key)
-					if !ok || oldValue != value {
-						sorting_file.Store(key, value)
-					}
-					return true
-				})
-			}
+			mapping.Range(func(key string, value interface{}) bool {
+				oldValue, ok := sorting_file.Load(key)
+				if !ok || oldValue != value {
+					sorting_file.Store(key, value)
+				}
+				return true
+			})
 
 		}
-		if !force_update {
-			//update global cached list
-			opts := rest.Opts{
-				Method:     method,
-				Path:       path,
-				Parameters: f.baseParams(),
+		//update global cached list
+		opts := rest.Opts{
+			Method:     method,
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		opts.Parameters.Set("includebreadcrumbs", "false")
+		opts.Parameters.Set("limit", "1")
+		var newcached []api.Item
+		var totalcount int
+		var printed = false
+		var err_code = 429
+		totalcount = 2
+		for len(newcached) < totalcount {
+			partialresult = nil
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+			var retries = 0
+			if resp != nil {
+				err_code = resp.StatusCode
 			}
-			opts.Parameters.Set("includebreadcrumbs", "false")
-			opts.Parameters.Set("limit", "1")
-			var newcached []api.Item
-			var totalcount int
-			var printed = false
-			var err_code = 429
-			totalcount = 2
-			for len(newcached) < totalcount {
+			for err_code == 429 && retries <= 5 {
 				partialresult = nil
-				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-				var retries = 0
-				if resp != nil {
-					err_code = resp.StatusCode
-				}
-				for err_code == 429 && retries <= 5 {
-					partialresult = nil
-					time.Sleep(time.Duration(2) * time.Second)
-					resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-					if resp != nil {
-						err_code = resp.StatusCode
-					}
-					retries += 1
-				}
-				if err == nil {
-					totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
-					if err == nil {
-						if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
-							if time.Now().Unix()-lastcheck > interval && !printed {
-								fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
-								printed = true
-							}
-							newcached = append(newcached, partialresult...)
-							opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
-							opts.Parameters.Set("limit", "2500")
-							updated = true
-						} else {
-							newcached = cached
-						}
-					} else {
-						break
-					}
-				} else {
-					break
-				}
-			}
-			//fmt.Printf("Done.\n")
-			//fmt.Printf("Updating RealDebrid Torrents ... ")
-			cached = newcached
-			//get torrents
-			path = "/torrents"
-			opts = rest.Opts{
-				Method:     method,
-				Path:       path,
-				Parameters: f.baseParams(),
-			}
-			opts.Parameters.Set("limit", "1")
-			var newtorrents []api.Item
-			totalcount = 2
-			err_code = 429
-			for len(newtorrents) < totalcount {
-				partialresult = nil
+				time.Sleep(time.Duration(2) * time.Second)
 				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
 				if resp != nil {
 					err_code = resp.StatusCode
 				}
-				var retries = 0
-				for err_code == 429 && retries <= 5 {
-					partialresult = nil
-					time.Sleep(time.Duration(2) * time.Second)
-					resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-					if resp != nil {
-						err_code = resp.StatusCode
-					}
-					retries += 1
-				}
+				retries += 1
+			}
+			if err == nil {
+				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
 				if err == nil {
-					totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
-					if err == nil {
-						if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
-							newtorrents = append(newtorrents, partialresult...)
-							opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
-							opts.Parameters.Set("limit", "2500")
-							updated = true
-						} else {
-							newtorrents = torrents
+					if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
+						if time.Now().Unix()-lastcheck > interval && !printed {
+							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
+							printed = true
 						}
+						newcached = append(newcached, partialresult...)
+						opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
+						opts.Parameters.Set("limit", "2500")
+						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
+						updated = true
 					} else {
-						break
+						newcached = cached
 					}
 				} else {
 					break
 				}
+			} else {
+				break
 			}
-			// Set everything as being up to date
-			lastcheck = time.Now().Unix()
-			lastFileMod = fileModTime
-			//fmt.Printf("Done.\n")
-			torrents = newtorrents
 		}
+		//fmt.Printf("Done.\n")
+		//fmt.Printf("Updating RealDebrid Torrents ... ")
+		cached = newcached
+		//get torrents
+		path = "/torrents"
+		opts = rest.Opts{
+			Method:     method,
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		opts.Parameters.Set("limit", "1")
+		var newtorrents []api.Item
+		totalcount = 2
+		err_code = 429
+		for len(newtorrents) < totalcount {
+			partialresult = nil
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
+			var retries = 0
+			for err_code == 429 && retries <= 5 {
+				partialresult = nil
+				time.Sleep(time.Duration(2) * time.Second)
+				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
+				retries += 1
+			}
+			if err == nil {
+				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+				if err == nil {
+					if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
+						newtorrents = append(newtorrents, partialresult...)
+						opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
+						opts.Parameters.Set("limit", "2500")
+						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
+						updated = true
+					} else {
+						newtorrents = torrents
+					}
+				} else {
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		// Set everything as being up to date
+		lastcheck = time.Now().Unix()
+		lastFileMod = fileModTime
+		//fmt.Printf("Done.\n")
+		torrents = newtorrents
 
 		// Iterate through built file and torrent list:
 		var broken = false
-		var err_code = 0
+		err_code = 0
 		if updated {
 			for i := range torrents {
-				//if force update, skip unaffected torrents
-				if force_update {
-					var skip = true
-					for _, force_updated_item := range force_updated_items {
-						if strings.Contains(force_updated_item, torrents[i].Name) {
-							skip = false
-						}
-					}
-					if skip {
-						continue
-					}
-				}
 				//handle dead torrents
 				broken = false
 				for _, TorrentID := range broken_torrents {
@@ -1044,18 +1021,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// Iterate through the map
 			mapping.Range(func(key string, newLocation interface{}) bool {
 
-				if force_update {
-					skip := true
-					for _, force_updated_item := range force_updated_items {
-						if strings.Contains(key, force_updated_item) {
-							skip = false
-						}
-					}
-					if skip {
-						return true
-					}
-				}
-
 				if strings.HasSuffix(newLocation.(string), trash_indicator) {
 					return true
 				}
@@ -1108,9 +1073,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			})
 
 		}
-
-		// set force update to false
-		force_update = false
 
 	}
 
@@ -1279,7 +1241,7 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 	// if rootID is a torrent ID
 	if len(rootID) == 13 && rootID == strings.ToUpper(rootID) {
 		fs.LogPrint(fs.LogLevelDebug, "removing realdebrid torrent id: "+rootID)
-		path := "/torrents/delete/" + rootID
+		path := "/torrents/delete/DISABLED" + rootID
 		opts := rest.Opts{
 			Method:     "DELETE",
 			Path:       path,
@@ -1323,8 +1285,10 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // move a file or folder
 //
 func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDirectoryID, newDirectoryID string) (err error) {
+	// fs.LogPrint(fs.LogLevelDebug, "move locking file_mutex")
 	file_mutex.Lock()
 	defer file_mutex.Unlock()
+	// defer fs.LogPrint(fs.LogLevelDebug, "move unlocking file_mutex")
 	// Handle IDs
 	oldDirectoryID_o := oldDirectoryID
 	for _, torrent := range torrents {
@@ -1386,7 +1350,7 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 		}
 		return true
 	})
-	if len(affected_items) == 0 {
+	if len(affected_items) == 0 || !isFile {
 		affected_items = append(affected_items, oldDirectoryID+oldLeaf)
 	}
 	scanner := bufio.NewScanner(file)
@@ -1447,9 +1411,7 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 //
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	move_mutex.Lock()
-	defer move_mutex.Unlock()
-	force_update = true
+
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
@@ -1468,7 +1430,46 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, err
 	}
 
+	// Remove the old item from the folder structure
+	oldDir, _ := mapping.LoadAndDelete(srcObj.MappingID)
+	var newItems []api.Item
+	items, _ := folders.Load(oldDir.(string))
+	for i := range items.([]api.Item) {
+		if items.([]api.Item)[i].ID != srcObj.id {
+			newItems = append(newItems, items.([]api.Item)[i])
+		}
+	}
+	folders.Store(oldDir.(string), newItems)
+
+	// Add the new item to the folder structure
+	if last := directoryID[len(directoryID)-1]; last != '/' {
+		directoryID = directoryID + "/"
+	}
+	if first := directoryID[0]; first != '/' {
+		directoryID = "/" + directoryID
+	}
+	mapping.Store(srcObj.MappingID, directoryID)
+	newItem := api.Item{}
+	newItem.Name = strings.Split(remote, "/")[len(strings.Split(remote, "/"))-1]
+	newItem.Size = srcObj.size
+	newItem.ID = srcObj.id
+	newItem.MimeType = srcObj.mimeType
+	newItem.Link = srcObj.url
+	newItem.ParentID = srcObj.ParentID
+	newItem.TorrentHash = srcObj.TorrentHash
+	newItem.MappingID = srcObj.MappingID
+	newItem.Type = "file"
+	newItem.Generated = srcObj.modTime.Format("2006-01-02T15:04:05.000Z")
+	items, _ = folders.Load(directoryID)
+	if items == nil {
+		items = []api.Item{}
+	}
+	items = items.([]api.Item)
+	items = append(items.([]api.Item), newItem)
+	folders.Store(directoryID, items)
+
 	err = dstObj.readMetaData(ctx)
+
 	if err != nil && !strings.HasSuffix(remote, trash_indicator) {
 		return nil, err
 	}
@@ -1484,9 +1485,6 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	move_mutex.Lock()
-	defer move_mutex.Unlock()
-	force_update = true
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
@@ -1748,8 +1746,10 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 
 	// if all files are trashed
 	fs.LogPrint(fs.LogLevelDebug, "all files of torrent: "+o.ParentID+" are in internal trash")
+	// fs.LogPrint(fs.LogLevelDebug, "remove locking file_mutex")
 	file_mutex.Lock()
 	defer file_mutex.Unlock()
+	// defer fs.LogPrint(fs.LogLevelDebug, "remove unlocking file_mutex")
 	// read sort file
 	file, err := os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -1793,7 +1793,7 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		}
 	}
 	fs.LogPrint(fs.LogLevelDebug, "removing realdebrid torrent id: "+o.ParentID)
-	path := "/torrents/delete/" + o.ParentID
+	path := "/torrents/delete/DISABLED" + o.ParentID
 	opts := rest.Opts{
 		Method:     "DELETE",
 		Path:       path,
