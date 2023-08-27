@@ -646,7 +646,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			// read the file, create if missing
 			file, err := os.Open(f.opt.SortFile)
 			if os.IsNotExist(err) {
-				fs.LogPrint(fs.LogLevelWarning, "no sorting file found. creating new empty sorting file.")
+				fs.LogPrint(fs.LogLevelWarning, "no sorting file found - creating new empty sorting file")
 				file, err = os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 				if err != nil {
 					fmt.Println(err)
@@ -664,7 +664,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			}
 
 			// Reset saved folder structure
-			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file.")
+			fs.LogPrint(fs.LogLevelDebug, "reading updated sorting file")
 			regex_defs = []RegexValuePair{}
 			eraseSyncMap(folders)
 			eraseSyncMap(mapping)
@@ -982,7 +982,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				if cachedfile.OriginalLink == result[i].OriginalLink {
 					result[i].Name = cachedfile.Name
 					result[i].Link = cachedfile.Link
-					// result[i].ID = cachedfile.ID
+					result[i].Size = cachedfile.Size
 					expired = false
 					break
 				}
@@ -1022,10 +1022,20 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					if ItemFile.Link != "" && ItemFile.Name != "" {
 						result[i].Name = ItemFile.Name
 						result[i].Link = ItemFile.Link
-						// result[i].ID = ItemFile.ID
+						result[i].Size = ItemFile.Size
 					}
 				} else {
 					continue
+				}
+
+			}
+			if _, ok := sorting_file.Load(result[i].MappingID); ok {
+				if value, _ := sorting_file.Load(result[i].MappingID); len(value.(string)) > 0 {
+					value, _ := sorting_file.Load(result[i].MappingID)
+					split := strings.Split(value.(string), "/")
+					if len(split) > 0 {
+						result[i].Name = split[len(strings.Split(value.(string), "/"))-1]
+					}
 				}
 			}
 		}
@@ -1284,6 +1294,9 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 			oldLeaf = oldLeaf + "/"
 		}
 	}
+
+	// fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("moving oldLeaf %s from oldDirectoryID %s to newLeaf %s newDirectoryID %s", oldLeaf, oldDirectoryID, newLeaf, newDirectoryID))
+
 	// Get all files that should be moved.
 	var affected_items []string
 	sorting_file.Range(func(key string, value interface{}) bool {
@@ -1366,7 +1379,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	// Create temporary object
-	dstObj, leaf, directoryID, err := f.createObject(ctx, remote, srcObj.modTime, srcObj.size)
+	_, leaf, directoryID, err := f.createObject(ctx, remote, srcObj.modTime, srcObj.size)
 	if err != nil {
 		return nil, err
 	}
@@ -1380,10 +1393,6 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	// Remove the old item from the folder structure
 	oldDir, _ := mapping.LoadAndDelete(srcObj.MappingID)
 	var newItems []api.Item
-	piss := folders.Size()
-	if piss == 123123123 {
-		return nil, nil
-	}
 	items, _ := folders.Load(oldDir.(string))
 	for i := range items.([]api.Item) {
 		if items.([]api.Item)[i].ID != srcObj.id {
@@ -1401,7 +1410,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 	mapping.Store(srcObj.MappingID, directoryID)
 	newItem := api.Item{}
-	newItem.Name = srcObj.id // strings.Split(remote, "/")[len(strings.Split(remote, "/"))-1]
+	newItem.Name = strings.Split(remote, "/")[len(strings.Split(remote, "/"))-1]
 	newItem.Size = srcObj.size
 	newItem.ID = srcObj.id
 	newItem.MimeType = srcObj.mimeType
@@ -1420,12 +1429,13 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	items = append(items.([]api.Item), newItem)
 	folders.Store(directoryID, items)
 
-	err = dstObj.readMetaData(ctx)
+	// moving = false
+	// err = dstObj.readMetaData(ctx)
 
 	if err != nil && !strings.HasSuffix(remote, trash_indicator) {
 		return nil, err
 	}
-	return dstObj, nil
+	return srcObj, nil
 }
 
 // DirMove moves src, srcRemote to this remote at dstRemote
