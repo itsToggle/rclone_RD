@@ -85,10 +85,12 @@ type RegexValuePair struct {
 var cached []api.Item
 var torrents []api.Item
 var broken_torrents []string
-var lastcheck int64 = time.Now().Unix()
+var lastcheck int64 = 0
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
 var file_mutex = &sync.RWMutex{}
+var move_mutex = &sync.RWMutex{}
+var moving = false
 var mapping = xsync.NewMap()
 var sorting_file = xsync.NewMap()
 var folders = xsync.NewMap()
@@ -179,17 +181,18 @@ type Fs struct {
 
 // Object describes a file
 type Object struct {
-	fs          *Fs       // what this object is part of
-	remote      string    // The remote path
-	hasMetaData bool      // metadata is present and correct
-	size        int64     // size of the object
-	modTime     time.Time // modification time of the object
-	id          string    // ID of the object
-	ParentID    string    // ID of parent directory
-	mimeType    string    // Mime type of object
-	url         string    // URL to download file
-	TorrentHash string    // Torrent Hash
-	MappingID   string    // Internal Mapping ID used for sorting
+	fs           *Fs       // what this object is part of
+	remote       string    // The remote path
+	hasMetaData  bool      // metadata is present and correct
+	size         int64     // size of the object
+	modTime      time.Time // modification time of the object
+	id           string    // ID of the object
+	ParentID     string    // ID of parent directory
+	mimeType     string    // Mime type of object
+	url          string    // URL to download file
+	TorrentHash  string    // Torrent Hash
+	MappingID    string    // Internal Mapping ID used for sorting
+	OriginalLink string    //Internal original Link
 }
 
 // ------------------------------------------------------------
@@ -634,12 +637,11 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		updated = true
 	}
 
-	if ((dirID == rootID) || !(f.folder_exists(dirID)) || updated) && math.Abs(float64(fileModTime-lastFileMod)) >= 5 {
+	if ((dirID == rootID) || !(f.folder_exists(dirID)) || updated) && !moving {
 		// Create folder structure
 		if updated {
 			// fs.LogPrint(fs.LogLevelDebug, "ListAll Rlocking file_mutex")
 			file_mutex.RLock()
-			defer file_mutex.RUnlock()
 			// defer fs.LogPrint(fs.LogLevelDebug, "ListAll Runlocking file_mutex")
 			// read the file, create if missing
 			file, err := os.Open(f.opt.SortFile)
@@ -700,6 +702,8 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					}
 				}
 			}
+
+			file_mutex.RUnlock()
 
 			mapping.Range(func(key string, value interface{}) bool {
 				oldValue, ok := sorting_file.Load(key)
@@ -843,59 +847,23 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					}
 				}
 				//iterate through files
-				var broken = false
 				for _, link := range torrents[i].Links {
 					err_code = 0
 					if link == "" {
 						continue
 					}
 					var ItemFile api.Item
-					for _, cachedfile := range cached {
-						if cachedfile.OriginalLink == link {
-							ItemFile = cachedfile
-							break
-						}
-					}
-					if ItemFile.Link == "" {
-						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
-						path = "/unrestrict/link"
-						method = "POST"
-						opts := rest.Opts{
-							Method: method,
-							Path:   path,
-							MultipartParams: url.Values{
-								"link": {link},
-							},
-							Parameters: f.baseParams(),
-						}
-						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-						if resp != nil {
-							err_code = resp.StatusCode
-						}
-						if err_code == 503 || err_code == 404 {
-							broken = true
-							break
-						}
-						var retries = 0
-						for err_code == 429 && retries <= 5 {
-							time.Sleep(time.Duration(2) * time.Second)
-							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-							if resp != nil {
-								err_code = resp.StatusCode
-							}
-							retries += 1
-						}
-					}
-					if ItemFile.Name == "" {
-						continue
-					}
-					mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
+					ItemFile.Name = strings.Split(link, "/")[len(strings.Split(link, "/"))-1]
+					ItemFile.ID = ItemFile.Name
+					mapping_id := "/" + torrents[i].Name + "/" + ItemFile.ID
 					ItemFile.MappingID = mapping_id
 					ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
 					ItemFile.ParentID = torrents[i].ID
 					ItemFile.TorrentHash = torrents[i].TorrentHash
 					ItemFile.Generated = torrents[i].Generated
 					ItemFile.Type = "file"
+					ItemFile.Link = link
+					ItemFile.OriginalLink = link
 					if _, ok := mapping.Load(mapping_id); !ok {
 						if _, ok := mapping.Load("/" + torrents[i].Name + "/"); ok {
 							value, _ := mapping.Load("/" + torrents[i].Name + "/")
@@ -934,86 +902,6 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 							continue
 						}
 						folders.Store(value.(string), append(list.([]api.Item), ItemFile))
-					}
-				}
-				if broken {
-					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
-					for _, link := range torrents[i].Links {
-						err_code = 0
-						var ItemFile api.Item
-						fs.LogPrint(fs.LogLevelDebug, "creating new unrestricted direct link for torrent: "+torrents[i].Name)
-						path = "/unrestrict/link"
-						method = "POST"
-						opts := rest.Opts{
-							Method: method,
-							Path:   path,
-							MultipartParams: url.Values{
-								"link": {link},
-							},
-							Parameters: f.baseParams(),
-						}
-						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-						if resp != nil {
-							err_code = resp.StatusCode
-						}
-						var retries = 0
-						for err_code == 429 && retries <= 5 {
-							time.Sleep(time.Duration(2) * time.Second)
-							resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
-							if resp != nil {
-								err_code = resp.StatusCode
-							}
-							retries += 1
-						}
-						if ItemFile.Name == "" {
-							continue
-						}
-						mapping_id := "/" + torrents[i].Name + "/" + ItemFile.Name
-						ItemFile.MappingID = mapping_id
-						ItemFile.DefaultLocation = torrents[i].DefaultLocation + torrents[i].Name + "/"
-						ItemFile.ParentID = torrents[i].ID
-						ItemFile.TorrentHash = torrents[i].TorrentHash
-						ItemFile.Generated = torrents[i].Generated
-						ItemFile.Type = "file"
-						if _, ok := mapping.Load(mapping_id); !ok {
-							if _, ok := mapping.Load("/" + torrents[i].Name + "/"); ok {
-								value, _ := mapping.Load("/" + torrents[i].Name + "/")
-								mapping.Store(mapping_id, value)
-							} else {
-								mapping.Store(mapping_id, ItemFile.DefaultLocation)
-							}
-						} else {
-							if value, _ := mapping.Load(mapping_id); len(value.(string)) > 0 {
-								value, _ := mapping.Load(mapping_id)
-								split := strings.Split(value.(string), "/")
-								if len(split) > 0 {
-									ItemFile.Name = split[len(strings.Split(value.(string), "/"))-1]
-								}
-							}
-							if ItemFile.Name == "" || strings.HasSuffix(ItemFile.Name, trash_indicator) {
-								continue
-							}
-							value, _ := mapping.Load(mapping_id)
-							mapping.Store(mapping_id, strings.Join(strings.Split(value.(string), "/")[:len(strings.Split(value.(string), "/"))-1], "/")+"/")
-						}
-						value, _ := mapping.Load(mapping_id)
-						if value != nil {
-							list, ok := folders.Load(value.(string))
-							if !ok {
-								list = []api.Item{}
-							}
-							skip := false
-							for _, existing_item := range list.([]api.Item) {
-								if existing_item.Name == ItemFile.Name {
-									skip = true
-									break
-								}
-							}
-							if skip {
-								continue
-							}
-							folders.Store(value.(string), append(list.([]api.Item), ItemFile))
-						}
 					}
 				}
 			}
@@ -1080,12 +968,67 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if value == nil {
 		value = []api.Item{}
 	}
+
 	result = append(result, value.([]api.Item)...)
 
 	if err != nil {
 		return newDirID, found, fmt.Errorf("couldn't list files: %w", err)
 	}
 	for i := range result {
+		// Turn temporary restricted items into unretricted items
+		if result[i].Type == api.ItemTypeFile {
+			expired := true
+			for _, cachedfile := range cached {
+				if cachedfile.OriginalLink == result[i].OriginalLink {
+					result[i].Name = cachedfile.Name
+					result[i].Link = cachedfile.Link
+					// result[i].ID = cachedfile.ID
+					expired = false
+					break
+				}
+			}
+			if expired {
+				fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("creating new link for file %s from torrent hash %s", result[i].Name, result[i].TorrentHash))
+				var ItemFile api.Item
+				broken := false
+				path = "/unrestrict/link"
+				method = "POST"
+				opts := rest.Opts{
+					Method: method,
+					Path:   path,
+					MultipartParams: url.Values{
+						"link": {result[i].OriginalLink},
+					},
+					Parameters: f.baseParams(),
+				}
+				err_code := 0
+				resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
+				if err_code == 503 || err_code == 404 {
+					broken = true
+				}
+				if !broken {
+					var retries = 0
+					for err_code == 429 && retries <= 5 {
+						time.Sleep(time.Duration(2) * time.Second)
+						resp, _ = f.srv.CallJSON(ctx, &opts, nil, &ItemFile)
+						if resp != nil {
+							err_code = resp.StatusCode
+						}
+						retries += 1
+					}
+					if ItemFile.Link != "" && ItemFile.Name != "" {
+						result[i].Name = ItemFile.Name
+						result[i].Link = ItemFile.Link
+						// result[i].ID = ItemFile.ID
+					}
+				} else {
+					continue
+				}
+			}
+		}
 		item := &result[i]
 		layout := "2006-01-02T15:04:05.000Z"
 		if item.Generated != "" {
@@ -1285,10 +1228,7 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 // move a file or folder
 //
 func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDirectoryID, newDirectoryID string) (err error) {
-	// fs.LogPrint(fs.LogLevelDebug, "move locking file_mutex")
-	file_mutex.Lock()
-	defer file_mutex.Unlock()
-	// defer fs.LogPrint(fs.LogLevelDebug, "move unlocking file_mutex")
+
 	// Handle IDs
 	oldDirectoryID_o := oldDirectoryID
 	for _, torrent := range torrents {
@@ -1300,15 +1240,16 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 			break
 		}
 	}
-	// Handle Files
+	// // Handle Files
 	if isFile && len(id) == 13 {
-		for _, file := range cached {
-			if file.ID == id {
-				oldLeaf = file.Name
-				break
-			}
-		}
+		oldLeaf = id
 	}
+
+	// There was a change, so update the file requiring a lock
+	// fs.LogPrint(fs.LogLevelDebug, "move locking file_mutex")
+	file_mutex.Lock()
+	defer file_mutex.Unlock()
+	// defer fs.LogPrint(fs.LogLevelDebug, "move unlocking file_mutex")
 	// Open the file
 	file, err := os.OpenFile(f.opt.SortFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -1316,6 +1257,7 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 		return err
 	}
 	defer file.Close()
+
 	if last := newDirectoryID[len(newDirectoryID)-1]; last != '/' {
 		newDirectoryID = newDirectoryID + "/"
 	}
@@ -1412,6 +1354,11 @@ func (f *Fs) move(ctx context.Context, isFile bool, id, oldLeaf, newLeaf, oldDir
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 
+	move_mutex.Lock()
+	defer move_mutex.Unlock()
+	moving = true
+	defer func() { moving = false }()
+
 	srcObj, ok := src.(*Object)
 	if !ok {
 		fs.Debugf(src, "Can't move - not same remote type")
@@ -1433,6 +1380,10 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	// Remove the old item from the folder structure
 	oldDir, _ := mapping.LoadAndDelete(srcObj.MappingID)
 	var newItems []api.Item
+	piss := folders.Size()
+	if piss == 123123123 {
+		return nil, nil
+	}
 	items, _ := folders.Load(oldDir.(string))
 	for i := range items.([]api.Item) {
 		if items.([]api.Item)[i].ID != srcObj.id {
@@ -1450,11 +1401,12 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 	mapping.Store(srcObj.MappingID, directoryID)
 	newItem := api.Item{}
-	newItem.Name = strings.Split(remote, "/")[len(strings.Split(remote, "/"))-1]
+	newItem.Name = srcObj.id // strings.Split(remote, "/")[len(strings.Split(remote, "/"))-1]
 	newItem.Size = srcObj.size
 	newItem.ID = srcObj.id
 	newItem.MimeType = srcObj.mimeType
 	newItem.Link = srcObj.url
+	newItem.OriginalLink = srcObj.OriginalLink
 	newItem.ParentID = srcObj.ParentID
 	newItem.TorrentHash = srcObj.TorrentHash
 	newItem.MappingID = srcObj.MappingID
@@ -1485,6 +1437,9 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 //
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
+	move_mutex.Lock()
+	defer move_mutex.Unlock()
+
 	srcFs, ok := src.(*Fs)
 	if !ok {
 		fs.Debugf(srcFs, "Can't move directory - not same remote type")
@@ -1594,6 +1549,7 @@ func (o *Object) setMetaData(info *api.Item) (err error) {
 	o.ParentID = info.ParentID
 	o.TorrentHash = info.TorrentHash
 	o.MappingID = info.MappingID
+	o.OriginalLink = info.OriginalLink
 	return nil
 }
 
@@ -1663,8 +1619,8 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 					return nil, err
 				}
 			}
-			err = fmt.Errorf("Error opening file: '" + o.url + "'. This link seems to be broken. Torrent will be re-downloaded on next refresh.")
-			broken_torrents = append(broken_torrents, o.ParentID)
+			// err = fmt.Errorf("Error opening file: '" + o.url + "'. This link seems to be broken. Torrent will be re-downloaded.")
+			// broken_torrents = append(broken_torrents, o.ParentID)
 		}
 		return nil, err
 	}
