@@ -146,7 +146,7 @@ func init() {
 			Name:     "sort_file",
 			Help:     `please provide the full path to a file (file does not need to exist) that should be used for sorting`,
 			Advanced: true,
-			Default:  "./sorting.txt",
+			Default:  path.Join(path.Dir(config.GetConfigPath()), "sorting.txt"),
 		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
@@ -1685,28 +1685,6 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		// move file to trash
 		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
 		f.Move(ctx, o, o.remote+trash_indicator)
-
-		// // delete the link on realdebrid
-		// fs.LogPrint(fs.LogLevelDebug, "removing realdebrid link id: "+o.id)
-		// path := "/downloads/delete/" + o.id
-		// opts := rest.Opts{
-		// 	Method:     "DELETE",
-		// 	Path:       path,
-		// 	Parameters: f.baseParams(),
-		// }
-		// err_code := 0
-		// resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-		// if resp != nil {
-		// 	err_code = resp.StatusCode
-		// }
-		// for err_code == 429 && retries <= 5 {
-		// 	time.Sleep(time.Duration(2) * time.Second)
-		// 	resp, _ = f.srv.CallJSON(ctx, &opts, nil, &result)
-		// 	if resp != nil {
-		// 		err_code = resp.StatusCode
-		// 	}
-		// 	retries += 1
-		// }
 		return nil
 	}
 
@@ -1759,7 +1737,7 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		}
 	}
 	fs.LogPrint(fs.LogLevelDebug, "removing realdebrid torrent id: "+o.ParentID)
-	path := "/torrents/delete/DISABLED" + o.ParentID
+	path := "/torrents/delete/" + o.ParentID
 	opts := rest.Opts{
 		Method:     "DELETE",
 		Path:       path,
