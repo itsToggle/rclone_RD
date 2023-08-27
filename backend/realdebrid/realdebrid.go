@@ -112,10 +112,10 @@ var default_sorting = `# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # - create new directories using "/foldername"
 #   Example: /shit
 #
-# - write move/renaming changes using: "/" + "actual torrent title" + "/" + "actual file name" + " -> " + "destination"
+# - write move/renaming changes using: "/" + "actual torrent title" + "/" + "file ID" + " -> " + "destination"
 #   You do not need to create the directories you are moving stuff to, this will be done automatically.
 #   Example: /some.show.S01/ -> /shows/some.show/season 1/
-#   Example: /some.show.S01/some.show.S01E01.mkv -> /shows/some.show/season 1/episode 1.mkv
+#   Example: /some.show.S01/ABCDEFGHIJKL -> /shows/some.show/season 1/episode 1.mkv
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~ top level and regex folders: ~~~~~~~~~~
