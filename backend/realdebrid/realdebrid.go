@@ -861,6 +861,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 					ItemFile.ParentID = torrents[i].ID
 					ItemFile.TorrentHash = torrents[i].TorrentHash
 					ItemFile.Generated = torrents[i].Generated
+					ItemFile.Ended = torrents[i].Ended
 					ItemFile.Type = "file"
 					ItemFile.Link = link
 					ItemFile.OriginalLink = link
