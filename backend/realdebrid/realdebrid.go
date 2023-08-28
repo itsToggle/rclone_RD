@@ -834,7 +834,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						broken = true
 					}
 				}
-				if torrents[i].Status == "dead" || broken {
+				if torrents[i].Status == "dead" || torrents[i].Status == "error" || broken {
 					torrents[i] = f.redownloadTorrent(ctx, torrents[i])
 				}
 				//set default torrents[i] location
@@ -974,6 +974,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if err != nil {
 		return newDirID, found, fmt.Errorf("couldn't list files: %w", err)
 	}
+	loc, _ := time.LoadLocation("Europe/Paris")
 	for i := range result {
 		// Turn temporary restricted items into unretricted items
 		if result[i].Type == api.ItemTypeFile {
@@ -1025,7 +1026,12 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						result[i].Size = ItemFile.Size
 					}
 				} else {
-					continue
+					for k, torrent := range torrents {
+						if torrent.ID == result[i].ParentID {
+							torrents[k] = f.redownloadTorrent(ctx, torrents[k])
+							break
+						}
+					}
 				}
 
 			}
@@ -1042,10 +1048,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		item := &result[i]
 		layout := "2006-01-02T15:04:05.000Z"
 		if item.Generated != "" {
-			t, _ := time.Parse(layout, item.Generated)
+			t, _ := time.ParseInLocation(layout, item.Ended, loc)
 			item.CreatedAt = t.Unix()
 		} else if item.Ended != "" {
-			t, _ := time.Parse(layout, item.Ended)
+			t, _ := time.ParseInLocation(layout, item.Ended, loc)
 			item.CreatedAt = t.Unix()
 		}
 		if item.Type == api.ItemTypeFolder {
