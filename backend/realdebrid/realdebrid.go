@@ -1626,6 +1626,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		if resp != nil {
 			err_code = resp.StatusCode
 		}
+		if err_code == 503 || err_code == 404 {
+			return false, err
+		}
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1635,8 +1638,8 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 					return nil, err
 				}
 			}
-			// err = fmt.Errorf("Error opening file: '" + o.url + "'. This link seems to be broken. Torrent will be re-downloaded.")
-			// broken_torrents = append(broken_torrents, o.ParentID)
+			err = fmt.Errorf("error opening file: '" + o.url + "' this link seems to be broken - torrent will be re-downloaded")
+			broken_torrents = append(broken_torrents, o.ParentID)
 		}
 		return nil, err
 	}
