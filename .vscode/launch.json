@@ -38,7 +38,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["delete","realdebrid:/default/some.show/season 1"],
+            "args": ["delete","realdebrid:/shows/Archer Season 3  [2160p AI x265 S98 Joy]"],
             "console": "integratedTerminal"
         },
     ]

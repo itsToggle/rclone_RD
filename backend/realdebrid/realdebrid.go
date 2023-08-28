@@ -1676,6 +1676,16 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		}
 	}
 
+	// Check if o.MappingID exists in sorting_file and update its value
+	value, exists := sorting_file.Load(o.MappingID)
+	if exists {
+		// Append trash_indicator to the existing value
+		sorting_file.Store(o.MappingID, value.(string)+trash_indicator)
+	} else {
+		// Add o.MappingID as a key with the value o.MappingID + trash_indicator
+		sorting_file.Store(o.MappingID, o.MappingID+trash_indicator)
+	}
+
 	// Get all trashed files
 	var affected_items []string
 	sorting_file.Range(func(key string, value interface{}) bool {
@@ -1686,9 +1696,6 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 		}
 		return true
 	})
-	if len(affected_items) == 0 {
-		affected_items = append(affected_items, o.MappingID)
-	}
 
 	// if not all files are trashed
 	if len(affected_items) < torrent_files {
