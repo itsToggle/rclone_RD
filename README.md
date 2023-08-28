@@ -60,7 +60,7 @@ To add realdebrid as a remote, simply setup a realdebrid remote on your PC and c
 7. If you are running my rclone fork on Linux, replace "cmount" with "mount" in the command above.
 8. You've successfuly created a virtual drive of your debrid service!
 
-**You can run rclone as a background service by adding the mounting tag '--no-console' (Windows) or '--deamon' (Linux, Mac, etc).**
+**You can run rclone as a background service by adding the mounting tag '--no-console' (Windows) or '--daemon' (Linux, Mac, etc).**
 
 ### Recommended Tags when mounting:
 
