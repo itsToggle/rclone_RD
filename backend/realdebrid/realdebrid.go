@@ -85,6 +85,7 @@ type RegexValuePair struct {
 var cached []api.Item
 var torrents []api.Item
 var broken_torrents []string
+var broken_links []string
 var lastcheck int64 = 0
 var lastFileMod int64 = 0
 var interval int64 = 15 * 60
@@ -460,7 +461,7 @@ func (f *Fs) CreateDir(ctx context.Context, dirID, leaf string) (newID string, e
 
 // Redownload a dead torrent
 func (f *Fs) redownloadTorrent(ctx context.Context, torrent api.Item) (redownloaded_torrent api.Item) {
-	fs.LogPrint(fs.LogLevelNotice, "Redownloading dead torrent: "+torrent.Name)
+	fs.LogPrint(fs.LogLevelNotice, "redownloading dead torrent: "+torrent.Name)
 	//Get dead torrent file and hash info
 	var method = "GET"
 	var path = "/torrents/info/" + torrent.ID
@@ -990,7 +991,26 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				}
 			}
 			if expired {
-				fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("creating new link for file %s from torrent hash %s", result[i].Name, result[i].TorrentHash))
+				count := 0
+				for _, link := range broken_links {
+					if link == result[i].OriginalLink {
+						count += 1
+					}
+				}
+				if count > 1 {
+					// a redownload of the torrent did not fix the issue
+					fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("redownloading did not fix file: %s from torrent hash: %s", result[i].Name, result[i].TorrentHash))
+					location := result[i].DefaultLocation + result[i].Name
+					if value, ok := mapping.Load(result[i].MappingID); ok {
+						if len(value.(string)) > 0 {
+							location = value.(string)
+						}
+					}
+					expired_object, _ := f.newObjectWithInfo(ctx, location, &result[i])
+					f.remove(ctx, expired_object.(*Object))
+					continue
+				}
+				fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("creating new link for file: %s from torrent hash: %s", result[i].Name, result[i].TorrentHash))
 				var ItemFile api.Item
 				broken := false
 				path = "/unrestrict/link"
@@ -1008,7 +1028,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				if resp != nil {
 					err_code = resp.StatusCode
 				}
-				if err_code == 503 || err_code == 404 {
+				if err_code == 503 || err_code == 404 || resp == nil {
 					broken = true
 				}
 				if !broken {
@@ -1027,12 +1047,29 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 						result[i].Size = ItemFile.Size
 					}
 				} else {
+					broken_links = append(broken_links, result[i].OriginalLink)
+					count := 0
+					for _, link := range broken_links {
+						if link == result[i].OriginalLink {
+							count += 1
+						}
+					}
+					if count > 1 {
+						// a redownload of the torrent did not fix the issue
+						fs.LogPrint(fs.LogLevelDebug, fmt.Sprintf("redownloading did not fix file: %s from torrent hash: %s", result[i].Name, result[i].TorrentHash))
+						location := "broken"
+						result[i].Name = "broken"
+						expired_object, _ := f.newObjectWithInfo(ctx, location, &result[i])
+						f.remove(ctx, expired_object.(*Object))
+						continue
+					}
 					for k, torrent := range torrents {
 						if torrent.ID == result[i].ParentID {
 							torrents[k] = f.redownloadTorrent(ctx, torrents[k])
 							break
 						}
 					}
+
 				}
 
 			}
@@ -1073,6 +1110,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 			break
 		}
 	}
+
 	return
 }
 
@@ -1632,17 +1670,22 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		}
 		return shouldRetry(ctx, resp, err)
 	})
-	if err != nil {
-		if err_code == 503 || err_code == 404 {
-			for _, TorrentID := range broken_torrents {
-				if o.ParentID == TorrentID {
-					return nil, err
-				}
-			}
-			err = fmt.Errorf("error opening file: '" + o.url + "' this link seems to be broken - torrent will be re-downloaded")
-			broken_torrents = append(broken_torrents, o.ParentID)
+
+	if err != nil || err_code == 404 || err_code == 503 {
+		if err_code == 404 || (err != nil && strings.Contains(err.Error(), "404")) {
+			err_code = 404
+		} else if err_code == 503 || (err != nil && strings.Contains(err.Error(), "503")) {
+			err_code = 503
+		} else {
+			return nil, fmt.Errorf("error: (unknown) accessing url: %s", o.url)
 		}
-		return nil, err
+		for _, TorrentID := range broken_torrents {
+			if o.ParentID == TorrentID {
+				return nil, err
+			}
+		}
+		broken_torrents = append(broken_torrents, o.ParentID)
+		return nil, fmt.Errorf("error: %d accessing url: %s", err_code, o.url)
 	}
 	return resp.Body, err
 }
@@ -1698,7 +1741,7 @@ func (f *Fs) remove(ctx context.Context, o *Object) (err error) {
 	})
 
 	// if not all files are trashed
-	if len(affected_items) < torrent_files {
+	if len(affected_items) < torrent_files || o.remote == "broken" {
 		// move file to trash
 		fs.LogPrint(fs.LogLevelDebug, "moving file: "+o.MappingID+" to internal trash")
 		f.Move(ctx, o, o.remote+trash_indicator)
