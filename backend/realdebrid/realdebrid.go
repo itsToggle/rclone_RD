@@ -639,6 +639,114 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	}
 
 	if ((dirID == rootID) || !(f.folder_exists(dirID)) || updated) && !moving {
+		//update global cached list
+		opts := rest.Opts{
+			Method:     method,
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		opts.Parameters.Set("includebreadcrumbs", "false")
+		opts.Parameters.Set("limit", "1")
+		var newcached []api.Item
+		var totalcount int
+		var printed = false
+		var err_code = 429
+		totalcount = 2
+		for len(newcached) < totalcount {
+			partialresult = nil
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+			var retries = 0
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
+			for err_code == 429 && retries <= 5 {
+				partialresult = nil
+				time.Sleep(time.Duration(2) * time.Second)
+				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
+				retries += 1
+			}
+			if err == nil {
+				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+				if err == nil {
+					if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
+						if !printed {
+							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
+							printed = true
+						}
+						newcached = append(newcached, partialresult...)
+						opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
+						opts.Parameters.Set("limit", "2500")
+						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
+						updated = true
+					} else {
+						newcached = cached
+					}
+				} else {
+					break
+				}
+			} else {
+				break
+			}
+		}
+		//fmt.Printf("Done.\n")
+		//fmt.Printf("Updating RealDebrid Torrents ... ")
+		cached = newcached
+		//get torrents
+		path = "/torrents"
+		opts = rest.Opts{
+			Method:     method,
+			Path:       path,
+			Parameters: f.baseParams(),
+		}
+		opts.Parameters.Set("limit", "1")
+		var newtorrents []api.Item
+		totalcount = 2
+		err_code = 429
+		for len(newtorrents) < totalcount {
+			partialresult = nil
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+			if resp != nil {
+				err_code = resp.StatusCode
+			}
+			var retries = 0
+			for err_code == 429 && retries <= 5 {
+				partialresult = nil
+				time.Sleep(time.Duration(2) * time.Second)
+				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
+				if resp != nil {
+					err_code = resp.StatusCode
+				}
+				retries += 1
+			}
+			if err == nil {
+				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
+				if err == nil {
+					if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
+						newtorrents = append(newtorrents, partialresult...)
+						opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
+						opts.Parameters.Set("limit", "2500")
+						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
+						updated = true
+					} else {
+						newtorrents = torrents
+					}
+				} else {
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		// Set everything as being up to date
+		lastcheck = time.Now().Unix()
+		lastFileMod = fileModTime
+		//fmt.Printf("Done.\n")
+		torrents = newtorrents
+
 		// Create folder structure
 		if updated {
 			// fs.LogPrint(fs.LogLevelDebug, "ListAll Rlocking file_mutex")
@@ -714,119 +822,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				return true
 			})
 
-		}
-		//update global cached list
-		opts := rest.Opts{
-			Method:     method,
-			Path:       path,
-			Parameters: f.baseParams(),
-		}
-		opts.Parameters.Set("includebreadcrumbs", "false")
-		opts.Parameters.Set("limit", "1")
-		var newcached []api.Item
-		var totalcount int
-		var printed = false
-		var err_code = 429
-		totalcount = 2
-		for len(newcached) < totalcount {
-			partialresult = nil
-			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-			var retries = 0
-			if resp != nil {
-				err_code = resp.StatusCode
-			}
-			for err_code == 429 && retries <= 5 {
-				partialresult = nil
-				time.Sleep(time.Duration(2) * time.Second)
-				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-				if resp != nil {
-					err_code = resp.StatusCode
-				}
-				retries += 1
-			}
-			if err == nil {
-				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
-				if err == nil {
-					if totalcount != len(cached) || time.Now().Unix()-lastcheck > interval {
-						if time.Now().Unix()-lastcheck > interval && !printed {
-							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
-							printed = true
-						}
-						newcached = append(newcached, partialresult...)
-						opts.Parameters.Set("offset", strconv.Itoa(len(newcached)))
-						opts.Parameters.Set("limit", "2500")
-						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
-						updated = true
-					} else {
-						newcached = cached
-					}
-				} else {
-					break
-				}
-			} else {
-				break
-			}
-		}
-		//fmt.Printf("Done.\n")
-		//fmt.Printf("Updating RealDebrid Torrents ... ")
-		cached = newcached
-		//get torrents
-		path = "/torrents"
-		opts = rest.Opts{
-			Method:     method,
-			Path:       path,
-			Parameters: f.baseParams(),
-		}
-		opts.Parameters.Set("limit", "1")
-		var newtorrents []api.Item
-		totalcount = 2
-		err_code = 429
-		for len(newtorrents) < totalcount {
-			partialresult = nil
-			resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-			if resp != nil {
-				err_code = resp.StatusCode
-			}
-			var retries = 0
-			for err_code == 429 && retries <= 5 {
-				partialresult = nil
-				time.Sleep(time.Duration(2) * time.Second)
-				resp, err = f.srv.CallJSON(ctx, &opts, nil, &partialresult)
-				if resp != nil {
-					err_code = resp.StatusCode
-				}
-				retries += 1
-			}
-			if err == nil {
-				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
-				if err == nil {
-					if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
-						newtorrents = append(newtorrents, partialresult...)
-						opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
-						opts.Parameters.Set("limit", "2500")
-						// fs.LogPrint(fs.LogLevelDebug, "Setting updated to true")
-						updated = true
-					} else {
-						newtorrents = torrents
-					}
-				} else {
-					break
-				}
-			} else {
-				break
-			}
-		}
+			// Iterate through built file and torrent list:
+			var broken = false
+			err_code = 0
 
-		// Set everything as being up to date
-		lastcheck = time.Now().Unix()
-		lastFileMod = fileModTime
-		//fmt.Printf("Done.\n")
-		torrents = newtorrents
-
-		// Iterate through built file and torrent list:
-		var broken = false
-		err_code = 0
-		if updated {
 			for i := range torrents {
 				//handle dead torrents
 				broken = false
