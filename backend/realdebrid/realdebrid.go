@@ -725,6 +725,10 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 				totalcount, err = strconv.Atoi(resp.Header["X-Total-Count"][0])
 				if err == nil {
 					if totalcount != len(torrents) || time.Now().Unix()-lastcheck > interval {
+						if !printed {
+							fs.LogPrint(fs.LogLevelDebug, "updating all links and torrents")
+							printed = true
+						}
 						newtorrents = append(newtorrents, partialresult...)
 						opts.Parameters.Set("offset", strconv.Itoa(len(newtorrents)))
 						opts.Parameters.Set("limit", "2500")
