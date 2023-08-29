@@ -746,7 +746,9 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 		}
 
 		// Set everything as being up to date
-		lastcheck = time.Now().Unix()
+		if time.Now().Unix()-lastcheck > interval {
+			lastcheck = time.Now().Unix()
+		}
 		lastFileMod = fileModTime
 		//fmt.Printf("Done.\n")
 		torrents = newtorrents
