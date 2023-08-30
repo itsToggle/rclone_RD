@@ -981,7 +981,7 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if err != nil {
 		return newDirID, found, fmt.Errorf("couldn't list files: %w", err)
 	}
-	loc, _ := time.LoadLocation("Europe/Paris")
+	loc := time.FixedZone("Europe/Paris", 2*60*60)
 	for i := range result {
 		// Turn temporary restricted items into unretricted items
 		if result[i].Type == api.ItemTypeFile {
@@ -1670,9 +1670,6 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		if resp != nil {
 			err_code = resp.StatusCode
 		}
-		if err_code == 503 || err_code == 404 {
-			return false, err
-		}
 		return shouldRetry(ctx, resp, err)
 	})
 
@@ -1689,8 +1686,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 				return nil, err
 			}
 		}
-		broken_torrents = append(broken_torrents, o.ParentID)
-		return nil, fmt.Errorf("error: %d accessing url: %s", err_code, o.url)
+		msg := ""
+		if err != nil && strings.Contains(err.Error(), "<div class=\"alert alert-danger\">") {
+			msg = strings.Split(err.Error(), "<div class=\"alert alert-danger\">")[len(strings.Split(err.Error(), "<div class=\"alert alert-danger\">"))-1]
+			msg = strings.Split(msg, "</div>")[0]
+			msg = "(" + msg + ") "
+		}
+		// broken_torrents = append(broken_torrents, o.ParentID)
+		return nil, fmt.Errorf("error: %d %saccessing url: %s", err_code, msg, o.url)
 	}
 	return resp.Body, err
 }
