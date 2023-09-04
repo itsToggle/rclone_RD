@@ -102,9 +102,9 @@ func init() {
 			Default:  "folders",
 		}, {
 			Name:     "regex_shows",
-			Help:     `please define the regex definition that will determine if a torrent should be classified as a show. Default: "(?i)(S[0-9]{2}|SEASON|COMPLETE|[^457a-z\W\s]-[0-9]+)"`,
+			Help:     `please define the regex definition that will determine if a torrent should be classified as a show. Default: "(?i)[\W](S[0-9]{2}|SEASON|COMPLETE|[^457a-z\W\s]-[0-9]+)"`,
 			Advanced: true,
-			Default:  `(?i)(S[0-9]{2}|SEASON|COMPLETE|[^457a-z\W\s]-[0-9]+)`,
+			Default:  `(?i)[\W](S[0-9]{2}|SEASON|COMPLETE|[^457a-z\W\s]-[0-9]+)`,
 		}, {
 			Name:     "regex_movies",
 			Help:     `please define the regex definition that will determine if a torrent should be classified as a movie. Default: "(?i)(19|20)([0-9]{2} ?\.?)"`,
